@@ -1,0 +1,20 @@
+# Python bytecode
+*.pyc
+__pycache__/
+
+# OS-specific files
+.DS_Store
+
+# Environment variables
+.env
+
+# Generated data, models, and reports
+src/data/
+src/models/
+*.csv
+*.pkl
+*.xlsx
+
+docs_update.md
+docs.md
+explain.md
