@@ -34,6 +34,9 @@ class BinanceTrader:
         
         if IS_TESTNET:
             self.exchange.set_sandbox_mode(True)
+        
+        # [NEW] 매매 모드 설정 ('OFF', 'REAL', 'PAPER')
+        self.mode = 'OFF' 
 
         # 전략 파라미터 (V5)
         self.RSI_BUY = 55
@@ -45,6 +48,14 @@ class BinanceTrader:
         # 상태 관리
         self.STATE_FILE = "trade_state.json"
         self.state = self.load_state()
+
+    def set_mode(self, mode):
+        """모드 변경 함수"""
+        mode = mode.upper()
+        if mode in ['OFF', 'REAL', 'PAPER']:
+            self.mode = mode
+            return f"✅ 매매 모드가 **{self.mode}** 상태로 변경되었습니다."
+        return "❌ 잘못된 모드입니다. (OFF/REAL/PAPER)"
 
     def log(self, msg):
         print(msg)
@@ -126,22 +137,40 @@ class BinanceTrader:
             return None, None
 
     def execute_order(self, symbol, side, amount, reduce_only=False):
-        try:
-            params = {'reduceOnly': True} if reduce_only else {}
-            order = self.exchange.create_market_order(symbol, side, amount, params)
-            price = order['average'] if order['average'] else order['price']
-            
-            msg_type = "청산" if reduce_only else "진입"
-            
-            # 봇에게 알림 요청
-            if self.messenger:
-                self.messenger(symbol, side, price, amount, msg_type)
-                
-            print(f"✅ {msg_type} 주문 성공: {side} {symbol} {amount}")
-            return price
-        except Exception as e:
-            print(f"❌ 주문 실패 ({symbol}): {e}")
+        """모드에 따라 주문 실행 여부 결정"""
+        
+        # 1. 정지 상태면 즉시 리턴
+        if self.mode == 'OFF':
             return None
+
+        # 가격 정보 가져오기 (모의매매에서도 가격은 필요함)
+        ticker = self.exchange.fetch_ticker(symbol)
+        current_price = ticker['last']
+        msg_type = "청산" if reduce_only else "진입"
+
+        # 2. 모의매매 (PAPER)
+        if self.mode == 'PAPER':
+            log_msg = f"🧪 [모의매매] {symbol} {side.upper()} {msg_type} 시그널! (가격: {current_price}, 수량: {amount})"
+            print(log_msg)
+            if self.messenger:
+                # 모의매매용 별도 알림 함수 호출 or 기존 함수에 플래그 전달
+                self.messenger(symbol, side, current_price, amount, f"[모의] {msg_type}")
+            return current_price # 가상 체결 가격 반환
+
+        # 3. 실매매 (REAL)
+        if self.mode == 'REAL':
+            try:
+                params = {'reduceOnly': True} if reduce_only else {}
+                order = self.exchange.create_market_order(symbol, side, amount, params)
+                exec_price = order['average'] if order['average'] else order['price']
+                
+                print(f"🚀 [실매매] {symbol} {side} 체결 완료")
+                if self.messenger:
+                    self.messenger(symbol, side, exec_price, amount, msg_type)
+                return exec_price
+            except Exception as e:
+                print(f"❌ 주문 실패: {e}")
+                return None
 
     # ----------------------------------------------
     # [NEW] 디스코드 봇 보고용 함수
@@ -207,6 +236,8 @@ class BinanceTrader:
     # 메인 로직 (외부에서 호출)
     # ----------------------------------------------
     def run_logic(self):
+        if self.mode == 'OFF':
+            return "⏸️ 봇이 정지 상태입니다."
         log_buffer = [] # 로그 저장용
         
         try:

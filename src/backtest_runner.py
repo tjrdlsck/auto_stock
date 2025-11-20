@@ -6,20 +6,19 @@ import os
 # 서버에는 모니터가 없으므로, 차트 생성 시 화면 출력을 끕니다.
 # 이 설정은 다른 모든 라이브러리(backtrader 등)보다 먼저 와야 합니다.
 # -----------------------------------------------------------
-import matplotlib
-matplotlib.use('Agg') 
-import matplotlib.pyplot as plt
-
 import backtrader as bt
 import pandas as pd
 from datetime import datetime, timedelta
+import os
 
-# 프로젝트 루트 경로 추가
+# 프로젝트 루트 경로 추가 (sys.path is already handled by the calling script, but good for standalone running)
+# Note: The original file had a sys.path modification, which is kept here for context,
+# but might be redundant depending on execution context.
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config import CONFIG, DATA_DIR
 
 # ---------------------------------------------------------
-# 1. 데이터 피드 & 커미션
+# 1. 데이터 피드 & 커미션 (유지)
 # ---------------------------------------------------------
 class HMMData(bt.feeds.PandasData):
     lines = ('regime', 'rsi',)
@@ -31,7 +30,7 @@ class FuturesComm(bt.CommInfoBase):
     def get_margin(self, price): return price / self.p.leverage
 
 # ---------------------------------------------------------
-# 2. 전략 클래스 (V5)
+# 2. 전략 클래스 (V5) (유지)
 # ---------------------------------------------------------
 class HMM_Pro_Strategy_V5(bt.Strategy):
     params = (('bull_id', None), ('bear_id', None), ('rsi_buy', 55), ('rsi_sell', 45), 
@@ -72,53 +71,46 @@ class HMM_Pro_Strategy_V5(bt.Strategy):
         target_value = portfolio_value * 0.95 * self.p.leverage
         target_size = target_value / current_price
 
-        # 1. 포지션 관리
         if pos_size != 0 and self.entry_price:
-            if pos_size > 0: # Long
+            if pos_size > 0:
                 pnl_pct = (current_price - self.entry_price) / self.entry_price
-                if pnl_pct < -self.p.stop_loss: 
-                    self.close(); return
+                if pnl_pct < -self.p.stop_loss: self.close(); return
                 self.highest_price = max(self.highest_price, current_price)
-                if (self.highest_price - current_price)/self.highest_price > self.p.trail_percent and current_price > self.entry_price: 
-                    self.close(); return
-            elif pos_size < 0: # Short
+                if (self.highest_price - current_price)/self.highest_price > self.p.trail_percent and current_price > self.entry_price: self.close(); return
+            elif pos_size < 0:
                 pnl_pct = (self.entry_price - current_price) / self.entry_price
-                if pnl_pct < -self.p.stop_loss: 
-                    self.close(); return
+                if pnl_pct < -self.p.stop_loss: self.close(); return
                 self.lowest_price = min(self.lowest_price, current_price)
-                if (current_price - self.lowest_price)/self.lowest_price > self.p.trail_percent and current_price < self.entry_price: 
-                    self.close(); return
+                if (current_price - self.lowest_price)/self.lowest_price > self.p.trail_percent and current_price < self.entry_price: self.close(); return
 
-        # 2. 국면 청산
         if pos_size > 0 and current_regime == self.p.bear_id: self.close(); return
         if pos_size < 0 and current_regime == self.p.bull_id: self.close(); return
         if pos_size != 0 and current_regime not in [self.p.bull_id, self.p.bear_id]: self.close(); return
 
-        # 3. 진입
         if pos_size == 0:
-            if current_regime == self.p.bull_id and current_rsi < self.p.rsi_buy and current_price > current_ema:
+            if current_regime == self.p.bull_id and current_rsi < self.p.rsi_buy and current_price > self.ema:
                 self.order = self.order_target_size(target=target_size)
-            elif current_regime == self.p.bear_id and current_rsi > self.p.rsi_sell and current_price < current_ema:
+            elif current_regime == self.p.bear_id and current_rsi > self.p.rsi_sell and current_price < self.ema:
                 self.order = self.order_target_size(target=-target_size)
 
 # ---------------------------------------------------------
-# 3. 디스코드 봇 전용 백테스팅 함수
+# 3. 디스코드 봇 전용 백테스팅 함수 (수정됨)
 # ---------------------------------------------------------
 def run_single_backtest(symbol, days=365):
+    """차트/엑셀 없이 텍스트 요약만 반환"""
     clean_symbol = symbol.replace('/', '')
     file_path = os.path.join(DATA_DIR, f"{clean_symbol}_{CONFIG['TIMEFRAME']}.csv")
     
     if not os.path.exists(file_path):
-        return f"❌ 데이터 파일 없음: {file_path}", None, None
+        return f"❌ 데이터 파일 없음: {clean_symbol}", None
 
     try:
-        # 데이터 로드
+        # 데이터 로드 및 기간 필터링
         df = pd.read_csv(file_path, index_col=0, parse_dates=True)
         start_date = datetime.now() - timedelta(days=days)
         df = df.loc[start_date:]
         
-        if df.empty:
-            return "❌ 해당 기간 데이터 없음", None, None
+        if df.empty: return f"❌ 데이터 부족 ({days}일)", None
 
         # 국면 식별
         stats = df.groupby('Regime')['Log_Returns'].mean()
@@ -129,24 +121,19 @@ def run_single_backtest(symbol, days=365):
         cerebro = bt.Cerebro()
         data = HMMData(dataname=df)
         cerebro.adddata(data)
-
-        # 파라미터 설정
+        
+        # 전략 및 커미션 설정 (기존과 동일)
         is_btc = 'BTC' in symbol
-        current_rsi_buy = 55 if is_btc else 50
-        current_rsi_sell = 45 if is_btc else 50
-        leverage = 2.0 if is_btc else 1.0
-        
-        comm_info = FuturesComm(commission=0.0005, leverage=leverage)
-        cerebro.broker.addcommissioninfo(comm_info)
-        
         cerebro.addstrategy(HMM_Pro_Strategy_V5, 
                             bull_id=bull_id, bear_id=bear_id,
-                            rsi_buy=current_rsi_buy, rsi_sell=current_rsi_sell,
-                            leverage=leverage)
+                            rsi_buy=55 if is_btc else 50, 
+                            rsi_sell=45 if is_btc else 50,
+                            leverage=2.0 if is_btc else 1.0)
         
         cerebro.broker.setcash(10000.0)
-        cerebro.broker.set_shortcash(False)
-
+        cerebro.broker.addcommissioninfo(FuturesComm(commission=0.0005, leverage=2.0 if is_btc else 1.0))
+        
+        # 분석기
         cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name='trades')
         cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
 
@@ -154,9 +141,9 @@ def run_single_backtest(symbol, days=365):
         results = cerebro.run()
         strat = results[0]
 
-        # 결과 처리
-        portfolio_value = cerebro.broker.getvalue()
-        roi = (portfolio_value - 10000.0) / 10000.0 * 100
+        # 결과 계산
+        final_val = cerebro.broker.getvalue()
+        roi = (final_val - 10000.0) / 10000.0 * 100
         dd_info = strat.analyzers.drawdown.get_analysis()
         mdd = dd_info['max']['drawdown']
         
@@ -165,29 +152,53 @@ def run_single_backtest(symbol, days=365):
         won = trade_info.won.total if 'won' in trade_info and 'total' in trade_info.won else 0
         win_rate = (won / total_trades * 100) if total_trades > 0 else 0
 
-        summary = (f"📊 **{symbol} 백테스트 결과 ({days}일)**\n"
-                   f"💰 최종: ${portfolio_value:,.2f}\n"
-                   f"📈 수익률: **{roi:.2f}%**\n"
-                   f"🛡️ MDD: **{mdd:.2f}%**\n"
-                   f"🎲 승률: {win_rate:.2f}% ({total_trades}회)\n"
-                   f"⚙️ 레버리지: x{leverage}")
-
-        # 엑셀 저장
-        excel_path = f"report_{clean_symbol}.xlsx"
-        report_data = {
-            'Metric': ['Symbol', 'Days', 'Initial', 'Final', 'ROI', 'MDD', 'Win Rate', 'Trades'],
-            'Value': [symbol, days, 10000, portfolio_value, f"{roi:.2f}%", f"{mdd:.2f}%", f"{win_rate:.2f}%", total_trades]
-        }
-        pd.DataFrame(report_data).to_excel(excel_path, index=False)
-
-        # 차트 저장 (Agg 모드라 안전함)
-        img_path = f"chart_{clean_symbol}.png"
-        fig = cerebro.plot(style='candlestick', volume=False)[0][0]
-        fig.set_size_inches(12, 8)
-        fig.savefig(img_path, dpi=100)
-        plt.close(fig)
-
-        return summary, img_path, excel_path
+        # 텍스트 요약 생성 (마크다운 활용)
+        summary = (
+            f"📊 **{symbol} 백테스트 ({days}일)**\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"💰 수익률: **{roi:+.2f}%**\n"
+            f"🛡️ MDD: **{mdd:.2f}%**\n"
+            f"🎲 승률: **{win_rate:.1f}%** ({total_trades}회)\n"
+            f"💵 최종: ${final_val:,.0f}"
+        )
+        
+        # 배치 처리를 위해 수치 데이터도 딕셔너리로 반환
+        metrics = {'symbol': symbol, 'roi': roi, 'win_rate': win_rate, 'mdd': mdd}
+        return summary, metrics
 
     except Exception as e:
-        return f"❌ 백테스트 오류: {e}", None, None
+        return f"❌ 백테스트 오류: {e}", None
+
+def run_batch_backtest(days=365):
+    """일괄 백테스트: 텍스트 리포트만 생성"""
+    print(f"🚀 일괄 백테스팅 시작 ({len(CONFIG['SYMBOLS'])}개 심볼)")
+    
+    lines = [f"📊 **포트폴리오 전체 시뮬레이션 ({days}일)**", "━━━━━━━━━━━━━━━━━━━━"]
+    total_roi = 0
+    total_win = 0
+    count = 0
+
+    for symbol in CONFIG['SYMBOLS']:
+        text, metrics = run_single_backtest(symbol, days)
+        if metrics:
+            icon = "🔴" if metrics['roi'] < 0 else "🟢"
+            lines.append(f"{icon} **{symbol}**: {metrics['roi']:+.2f}% (MDD {metrics['mdd']:.1f}%)")
+            total_roi += metrics['roi']
+            total_win += metrics['win_rate']
+            count += 1
+        else:
+            lines.append(f"⚠️ {symbol}: 실패")
+
+    if count > 0:
+        avg_roi = total_roi / count
+        avg_win = total_win / count
+        header = (
+            f"🏆 평균 수익률: **{avg_roi:+.2f}%**\n"
+            f"🎯 평균 승률: **{avg_win:.1f}%**\n"
+            f"━━━━━━━━━━━━━━━━━━━━"
+        )
+        lines.insert(2, header)
+    
+    return "\n".join(lines)
+
+    

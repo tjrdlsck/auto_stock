@@ -11,3 +11,5 @@ scikit-learn>=1.0.0
 discord.py>=2.0.0
 matplotlib>=3.5.0
 openpyxl>=3.0.0
+backtrader>=1.9.76
+ta>=0.10.0

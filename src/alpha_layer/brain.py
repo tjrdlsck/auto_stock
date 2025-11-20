@@ -4,6 +4,7 @@ import os
 # Add the 'src' directory to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+import shutil
 import pandas as pd
 import numpy as np
 import joblib
@@ -110,7 +111,12 @@ class Brain:
                 
                 # 4. 모델 저장 (파일명: hmm_BTCUSDT.pkl)
                 model_path = os.path.join(MODELS_DIR, f"hmm_{clean_symbol}.pkl")
-                joblib.dump(model, model_path)
+                temp_path = model_path + ".tmp"
+                joblib.dump(model, temp_path)
+                # 운영체제 차원에서 파일 이동(rename)은 원자적(Atomic)이라 읽는 도중 깨지지 않음
+                shutil.move(temp_path, model_path) 
+
+                print(f"💾 모델 안전 저장 완료: {model_path}")
                 
                 # 5. 데이터 업데이트 (Regime 컬럼 추가된 CSV 저장)
                 df_result.to_csv(file_path)

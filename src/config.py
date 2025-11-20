@@ -17,7 +17,7 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 CONFIG = {
     # 1. 대상 코인 목록 (거래대금 상위 위주 추천)
     # 비트코인(BTC), 이더리움(ETH), 솔라나(SOL), 리플(XRP), 도지(DOGE)
-    "SYMBOLS": ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT"],
+    "SYMBOLS": ["BTC/USDT", "ETH/USDT", "SOL/USDT", "DOGE/USDT"],
     
     # 2. 캔들 시간봉 (1h, 4h, 1d)
     "TIMEFRAME": "1h",
