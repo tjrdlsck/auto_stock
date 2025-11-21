@@ -6,6 +6,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import shutil
 import pandas as pd
+import pandas_ta as ta
 import numpy as np
 import joblib
 from hmmlearn.hmm import GaussianHMM
@@ -27,9 +28,19 @@ class Brain:
 
         df = pd.read_csv(file_path, index_col=0, parse_dates=True)
         
+        # 필요한 특징 (RSI_14, Log_Returns, Range_Vol) 계산 (CSV에 없을 경우)
+        if 'RSI_14' not in df.columns:
+            df.ta.rsi(length=14, append=True)
+        if 'Log_Returns' not in df.columns:
+            df['Log_Returns'] = np.log(df['close'] / df['close'].shift(1))
+        if 'Range_Vol' not in df.columns:
+            df['Range_Vol'] = (df['high'] - df['low']) / df['close']
+        if 'OBV' not in df.columns:
+            df.ta.obv(append=True)
+
         # Rolling Scaling (과거 30개 캔들 기준 정규화 -> 미래 참조 방지)
         window = 30
-        features = ['Log_Returns', 'Range_Vol', 'RSI']
+        features = ['Log_Returns', 'Range_Vol', 'RSI_14', 'OBV']
         
         for col in features:
             rolling_mean = df[col].rolling(window=window).mean()
@@ -44,7 +55,7 @@ class Brain:
         """HMM 모델 학습"""
         print(f"🧠 [{symbol}] 모델 학습 중... (데이터: {len(df)} rows)")
         
-        X = df[['Log_Returns_Scaled', 'Range_Vol_Scaled', 'RSI_Scaled']].values
+        X = df[['Log_Returns_Scaled', 'Range_Vol_Scaled', 'RSI_14_Scaled', 'OBV_Scaled']].values
         
         # Gaussian HMM 설정
         # covariance_type='full': 각 피처 간의 상관관계까지 학습 (정교함 UP)
