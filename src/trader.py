@@ -12,8 +12,6 @@ import asyncio
 from dotenv import load_dotenv
 from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 
-
-
 # 프로젝트 경로 설정
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config import CONFIG, MODELS_DIR, DATA_DIR
@@ -42,45 +40,47 @@ class BinanceTrader:
         
         # DB 경로 설정 및 초기화
         self.db_path = os.path.join(DATA_DIR, 'trade_state.db')
-        self._init_db() # 데이터베이스 초기화 및 테이블 생성
+        self._init_db() 
         
-        # [NEW] 매매 모드 설정 (DB에서 불러오기)
+        # 매매 모드 설정 (OFF / REAL / PAPER)
         self.mode = self._get_mode_from_db()
 
-        # 전략 파라미터 (V8)
-        self.RSI_BUY = 55
-        self.RSI_SELL = 45
+        # 전략 내부 상수
         self.EMA_PERIOD = 20
-        self.STOP_LOSS_ATR_MULTIPLIER = 2.0 # ATR 기반 손절 배수
-        self.BREAKEVEN_PNL_PCT = 0.015      # 본절 전환 수익률 (+1.5%)
-        self.COOLDOWN_BARS = 3              # 진입 쿨타임 (시간)
-        self.TRAIL_PCT = 0.03               # 트레일링 스탑
+        self.COOLDOWN_BARS = 2  # 진입/청산 후 대기 봉 개수
         
-        self.trade_lock = asyncio.Lock() # 동시성 제어를 위한 락
-        self.cooldowns = {} # [NEW] 쿨다운 관리
+        # 동시성 제어
+        self.trade_lock = asyncio.Lock() 
+        self.cooldowns = {} 
         
-        # 상태 관리 (SQLite로 대체)
-        self.state = self._load_positions_from_db() # DB에서 초기 상태 로드
+        # 메모리 상태 로드 (현재 모드에 맞는 데이터만)
+        self.state = self._load_positions_from_db()
 
-    # --- SQLite Helper Methods ---
+    # -----------------------------------------------------------
+    # [DB Section] SQLite Helper Methods (Data Isolation Applied)
+    # -----------------------------------------------------------
     def _init_db(self):
-        """데이터베이스를 초기화하고 필요한 테이블 생성 및 마이그레이션을 수행합니다."""
+        """DB 초기화: 모드(REAL/PAPER) 격리를 위한 스키마 적용 및 마이그레이션"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # 1. positions 테이블 생성
+        # 1. positions 테이블 생성 (mode 컬럼 포함)
+        # (symbol, mode)가 유니크해야 하므로 PK는 아니지만 조회 시 항상 두 조건을 같이 사용함
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS positions (
-                symbol TEXT PRIMARY KEY,
+                symbol TEXT,
+                mode TEXT,
                 entry_price REAL,
                 highest_price REAL,
                 lowest_price REAL,
                 side TEXT,
-                amount REAL
+                amount REAL,
+                entry_regime TEXT,
+                stop_loss_price REAL DEFAULT 0.0
             )
         ''')
         
-        # 2. system_settings 테이블 생성
+        # 2. system_settings 테이블
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS system_settings (
                 key TEXT PRIMARY KEY,
@@ -88,27 +88,26 @@ class BinanceTrader:
             )
         ''')
         
-        # --- [마이그레이션] positions 테이블에 entry_regime 컬럼 추가 ---
+        # --- [마이그레이션] 컬럼 추가 ---
         cursor.execute("PRAGMA table_info(positions)")
         columns = [info[1] for info in cursor.fetchall()]
-        if 'entry_regime' not in columns:
-            print("⏳ [DB 마이그레이션] 'positions' 테이블에 'entry_regime' 컬럼 추가 중...")
-            cursor.execute("ALTER TABLE positions ADD COLUMN entry_regime TEXT")
         
-        # --- [마이그레이션] positions 테이블에 stop_loss_price 컬럼 추가 ---
+        # 필수 컬럼이 없으면 추가
+        if 'entry_regime' not in columns:
+            cursor.execute("ALTER TABLE positions ADD COLUMN entry_regime TEXT")
         if 'stop_loss_price' not in columns:
-            print("⏳ [DB 마이그레이션] 'positions' 테이블에 'stop_loss_price' 컬럼 추가 중...")
             cursor.execute("ALTER TABLE positions ADD COLUMN stop_loss_price REAL DEFAULT 0.0")
+        if 'mode' not in columns:
+            # 기존 데이터는 출처를 모르므로 'UNKNOWN' 처리하여 로직에서 배제
+            cursor.execute("ALTER TABLE positions ADD COLUMN mode TEXT DEFAULT 'UNKNOWN'")
 
-        # --- 기본값 설정 ---
+        # 기본 설정값 주입
         cursor.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('mode', 'OFF')")
         
         conn.commit()
         conn.close()
-        print(f"✅ SQLite DB 초기화 및 마이그레이션 완료: {self.db_path}")
 
     def _get_mode_from_db(self):
-        """DB에서 현재 매매 모드를 불러옵니다."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("SELECT value FROM system_settings WHERE key='mode'")
@@ -117,10 +116,17 @@ class BinanceTrader:
         return result[0] if result else 'OFF'
 
     def _load_positions_from_db(self):
-        """데이터베이스에서 현재 포지션 상태를 로드합니다."""
+        """현재 모드(REAL/PAPER)에 해당하는 포지션만 로드"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT symbol, entry_price, highest_price, lowest_price, side, amount, entry_regime, stop_loss_price FROM positions")
+        
+        # 격리 조건: WHERE mode = ?
+        cursor.execute("""
+            SELECT symbol, entry_price, highest_price, lowest_price, side, amount, entry_regime, stop_loss_price 
+            FROM positions 
+            WHERE mode = ?
+        """, (self.mode,))
+        
         rows = cursor.fetchall()
         conn.close()
         
@@ -139,133 +145,110 @@ class BinanceTrader:
         return state
 
     def _upsert_position_to_db(self, symbol, entry_price, highest_price, lowest_price, side, amount, entry_regime, stop_loss_price):
-        """단일 포지션을 데이터베이스에 저장하거나 업데이트합니다."""
+        """현재 모드(REAL/PAPER)로 포지션 저장"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+        
+        # 기존 레코드가 있으면 삭제 후 삽입 (SQLite의 INSERT OR REPLACE는 PK 기준이라 복잡하므로 DELETE-INSERT 사용)
+        cursor.execute("DELETE FROM positions WHERE symbol = ? AND mode = ?", (symbol, self.mode))
+        
         cursor.execute('''
-            INSERT OR REPLACE INTO positions (symbol, entry_price, highest_price, lowest_price, side, amount, entry_regime, stop_loss_price)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (symbol, entry_price, highest_price, lowest_price, side, amount, entry_regime, stop_loss_price))
+            INSERT INTO positions (symbol, mode, entry_price, highest_price, lowest_price, side, amount, entry_regime, stop_loss_price)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (symbol, self.mode, entry_price, highest_price, lowest_price, side, amount, entry_regime, stop_loss_price))
+        
         conn.commit()
         conn.close()
 
     def _delete_position_from_db(self, symbol):
-        """데이터베이스에서 특정 포지션을 삭제합니다."""
+        """현재 모드(REAL/PAPER)의 포지션만 삭제"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM positions WHERE symbol = ?", (symbol,))
+        cursor.execute("DELETE FROM positions WHERE symbol = ? AND mode = ?", (symbol, self.mode))
         conn.commit()
         conn.close()
-    # --- End SQLite Helper Methods ---
 
     def set_mode(self, new_mode):
-        """모드를 변경하고 DB에 저장"""
         new_mode = new_mode.upper()
         if new_mode not in ['OFF', 'REAL', 'PAPER']:
             return "❌ 잘못된 모드입니다."
         
         self.mode = new_mode
+        
+        # 모드 변경 시, 메모리 상태도 즉시 교체 (데이터 격리 핵심)
+        self.state = self._load_positions_from_db()
+        self.cooldowns = {} # 쿨다운 초기화
+        
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("UPDATE system_settings SET value = ? WHERE key = 'mode'", (new_mode,))
         conn.commit()
         conn.close()
-        return f"✅ 시스템 모드가 **{new_mode}**로 변경 및 저장되었습니다."
-
-    def log(self, msg):
-        print(msg)
-        # 메신저 콜백이 있으면 디스코드로도 전송 (중요 메시지만)
-        if self.messenger and "✅" in msg: 
-            # execute_order에서 따로 처리하므로 여기선 단순 로그만
-            pass
-
-    def load_state(self):
-        if os.path.exists(self.STATE_FILE):
-            try:
-                with open(self.STATE_FILE, 'r') as f:
-                    return json.load(f)
-            except:
-                return {}
-        return {}
-
-    def save_state(self):
-        with open(self.STATE_FILE, 'w') as f:
-            json.dump(self.state, f, indent=4)
-
-    def get_risk_setting(self, symbol):
-        if 'BTC' in symbol or 'ETH' in symbol:
-            return {'leverage': 2, 'risk_pct': 0.95}
-        elif 'SOL' in symbol:
-            return {'leverage': 1, 'risk_pct': 0.80}
-        else:
-            return {'leverage': 1, 'risk_pct': 0.50}
-
-    def calculate_position_size(self, usdt_balance, atr_value, target_risk=0.02):
-        """
-        ATR 기반으로 포지션 사이즈(수량) 계산
-        :param usdt_balance: 사용 가능한 USDT 잔고
-        :param atr_value: 현재 ATR 값
-        :param target_risk: 한 번의 거래에서 감수할 최대 손실 비율 (예: 2%)
-        :return: 계산된 포지션 수량
-        """
-        # 손절 라인을 ATR의 2배로 설정
-        stop_loss_dist_in_price = atr_value * 2
         
-        # 분모가 0이 되는 것을 방지
-        if stop_loss_dist_in_price == 0:
-            return 0
-            
-        # 리스크 관리 공식: (총 자본 * 리스크%) / (손절 거리)
-        # 즉, 손절이 나가도 총 자본의 2%만 잃도록 수량 조절
-        risk_per_coin = stop_loss_dist_in_price
-        qty = (usdt_balance * target_risk) / risk_per_coin
-        
-        return qty
+        return f"✅ 시스템 모드가 **{new_mode}**로 변경되었습니다. (데이터 격리 적용됨)"
+
+    # -----------------------------------------------------------
+    # [Logic Section] Trading Helper Methods
+    # -----------------------------------------------------------
 
     async def set_leverage(self, symbol, leverage):
         try:
             await self.exchange.set_leverage(leverage, symbol)
-        except Exception as e:
-            print(f"❌ 레버리지 설정 실패 ({symbol}, {leverage}): {e}")
+        except Exception:
+            pass 
+
+    def calculate_position_size_v2(self, total_equity, current_positions_count, leverage):
+        """
+        [자금 관리 V2] 포트폴리오 분산 투자
+        :param total_equity: 총 자산 (지갑 잔고 + 미실현 손익)
+        :param current_positions_count: 현재 보유 중인 포지션 개수
+        """
+        max_slots = CONFIG['MAX_OPEN_POSITIONS']
+        
+        # 1. 슬롯 초과 시 진입 불가
+        if current_positions_count >= max_slots:
+            return 0.0
+            
+        # 2. 1개 슬롯당 할당 금액 계산 (총 자산 / 최대 슬롯)
+        # 예: 자산 1000불, 3슬롯 -> 슬롯당 333불 할당
+        per_slot_equity = total_equity / max_slots
+        
+        # 3. 안전 마진 5% 확보 (수수료 등 대비)
+        entry_margin = per_slot_equity * 0.95
+        
+        # 최소 주문 금액 필터 (10 USDT 미만 진입 불가)
+        if entry_margin < 10:
+            return 0.0
+            
+        return entry_margin
 
     async def fetch_data_and_features(self, symbol):
         try:
             timeframe = CONFIG['TIMEFRAME']
+            # 지표 계산을 위해 충분한 데이터 가져오기
             candles = await self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=CONFIG['CANDLE_LIMIT'])
+            if not candles: return None
 
-            if not candles:
-                print(f"❌ [{symbol}] 데이터 수집 실패. 캔들이 없습니다.")
-                return None
-
-            # --- 캔들 완성 여부 체크 ---
+            # 마지막 미완성 캔들 제거 로직
             last_candle_ts = pd.to_datetime(candles[-1][0], unit='ms', utc=True)
-            timeframe_duration = pd.to_timedelta(timeframe)
-            now_utc = datetime.now(last_candle_ts.tz) # 캔들 타임존과 동일한 시간대 사용
-
-            # 마지막 캔들이 아직 닫히지 않았으면, 그 전 캔들까지만 사용
-            if now_utc < last_candle_ts + timeframe_duration:
-                print(f"🕯️ [{symbol}] 마지막 캔들 미완성. 분석에서 제외합니다. (현재: {now_utc}, 캔들 마감: {last_candle_ts + timeframe_duration})")
+            now_utc = datetime.now(last_candle_ts.tz)
+            if now_utc < last_candle_ts + pd.to_timedelta(timeframe):
                 candles = candles[:-1]
-            
-            if not candles:
-                print(f"❌ [{symbol}] 사용할 완성된 캔들이 없습니다.")
-                return None
-            # --- ---------------- ---
+            if not candles: return None
 
             df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
             df.set_index('timestamp', inplace=True)
 
-            # Feature Engineering (RSI_14가 기본값)
+            # --- Feature Engineering (V13 Sync) ---
             df['Log_Returns'] = np.log(df['close'] / df['close'].shift(1))
             df['Range_Vol'] = (df['high'] - df['low']) / df['close']
             df.ta.rsi(length=14, append=True)
             df.ta.ema(length=self.EMA_PERIOD, append=True)
-            df.ta.bbands(length=20, std=2, append=True) # Add Bollinger Bands
-            df.ta.atr(append=True) # Add ATR
-            df.ta.obv(append=True) # Add On-Balance Volume
+            df.ta.atr(length=14, append=True) # ATR 14 필수
+            df.ta.obv(append=True)
 
-            # Scaled Features
+            # Scaling for HMM
             window = 30
             features_to_scale = ['Log_Returns', 'Range_Vol', 'RSI_14', 'OBV']
             for col in features_to_scale:
@@ -275,189 +258,140 @@ class BinanceTrader:
             
             return df.dropna()
         except Exception as e:
-            print(f"❌ 데이터 처리 중 에러 ({symbol}): {e}")
+            print(f"❌ 데이터 처리 에러 ({symbol}): {e}")
             return None
 
     def get_hmm_regime(self, df, symbol):
         try:
             clean_symbol = symbol.replace('/', '')
             model_path = os.path.join(MODELS_DIR, f"hmm_{clean_symbol}.pkl")
-            
             if not os.path.exists(model_path): return None, None
 
             model = joblib.load(model_path)
             X = df[['Log_Returns_Scaled', 'Range_Vol_Scaled', 'RSI_14_Scaled', 'OBV_Scaled']].values
             hidden_states = model.predict(X)
             
+            # Regime Definition
             stats = pd.DataFrame(X, columns=['Ret', 'Vol', 'RSI', 'OBV'])
             stats['Regime'] = hidden_states
             regime_means = stats.groupby('Regime')['Ret'].mean()
             
             bear_id = regime_means.idxmin()
             bull_id = regime_means.idxmax()
-            
-            # Find the sideways ID
-            all_ids = set(range(model.n_components))
-            sideways_id = list(all_ids - {bull_id, bear_id})[0] if len(all_ids) > 2 else None
+            sideways_id = list(set(range(model.n_components)) - {bull_id, bear_id})[0] if model.n_components > 2 else None
             
             return hidden_states[-1], {'bull': bull_id, 'bear': bear_id, 'sideways': sideways_id}
         except:
             return None, None
 
-    # 네트워크 에러나 타임아웃 발생 시 1초 간격으로 최대 3번 재시도
-    @retry(
-        stop=stop_after_attempt(3), 
-        wait=wait_fixed(1), 
-        retry=retry_if_exception_type((ccxt.NetworkError, ccxt.RequestTimeout, ccxt.ExchangeError))
-    )
+    # -----------------------------------------------------------
+    # [Execution Section] Smart Order & Retry
+    # -----------------------------------------------------------
+    @retry(stop=stop_after_attempt(3), wait=wait_fixed(1), retry=retry_if_exception_type((ccxt.NetworkError, ccxt.RequestTimeout, ccxt.ExchangeError)))
     async def _create_market_order_with_retry(self, symbol, side, amount, params):
-        """재시도 로직이 적용된 실제 시장가 주문 실행 함수"""
         return await self.exchange.create_market_order(symbol, side, amount, params)
 
-    @retry(
-        stop=stop_after_attempt(3), 
-        wait=wait_fixed(1), 
-        retry=retry_if_exception_type((ccxt.NetworkError, ccxt.RequestTimeout, ccxt.ExchangeError))
-    )
+    @retry(stop=stop_after_attempt(3), wait=wait_fixed(1), retry=retry_if_exception_type((ccxt.NetworkError, ccxt.RequestTimeout, ccxt.ExchangeError)))
     async def _create_limit_order_with_retry(self, symbol, side, amount, price, params):
-        """재시도 로직이 적용된 실제 지정가 주문 실행 함수"""
         return await self.exchange.create_limit_order(symbol, side, amount, price, params)
 
     async def _smart_execute_order(self, symbol, side, amount, reduce_only=False):
-        """
-        지정가 주문을 먼저 시도하고, 일정 시간 미체결 시 시장가 주문으로 전환하는 스마트 실행 로직
-        """
         params = {'reduceOnly': True} if reduce_only else {}
         timeout = CONFIG['LIMIT_ORDER_TIMEOUT_SEC']
         force_market = CONFIG['FORCE_MARKET_ORDER_ON_TIMEOUT']
 
         try:
-            # 1. 최우선 호가 가져오기
             orderbook = await self.exchange.fetch_order_book(symbol)
-            if side == 'buy':
-                limit_price = orderbook['asks'][0][0] # 최우선 매도호가
-            else: # sell
-                limit_price = orderbook['bids'][0][0] # 최우선 매수호가
+            limit_price = orderbook['asks'][0][0] if side == 'buy' else orderbook['bids'][0][0]
             
-            # 2. 지정가 주문 시도
+            # 1. 지정가 주문 시도
             limit_order = await self._create_limit_order_with_retry(symbol, side, amount, limit_price, params)
             order_id = limit_order['id']
-            print(f"✅ [{symbol}] 지정가 주문 제출 완료. ID: {order_id}, 가격: {limit_price}, 수량: {amount}")
-
-            # 3. 일정 시간 대기하며 체결 여부 확인
+            
+            # 2. 체결 대기
             start_time = asyncio.get_event_loop().time()
             while asyncio.get_event_loop().time() - start_time < timeout:
                 order_status = await self.exchange.fetch_order(order_id, symbol)
                 if order_status['status'] == 'closed':
-                    print(f"🚀 [{symbol}] 지정가 주문 체결 완료. 가격: {order_status['average']}")
                     return order_status['average']
-                if order_status['filled'] > 0: # 부분 체결
-                    print(f"Partial fill for {symbol}. Filled: {order_status['filled']}")
-                    # 이 경우, 나머지 물량을 시장가로 처리하거나 다시 지정가를 낼 수 있음.
-                    # 여기서는 간단히 부분 체결된 가격을 반환하고 나머지는 무시 (실제 봇에서는 더 복잡한 로직 필요)
-                    return order_status['average']
+                await asyncio.sleep(1)
 
-                await asyncio.sleep(1) # 1초마다 상태 확인
-
-            # 4. 타임아웃 발생: 미체결 처리
-            order_status = await self.exchange.fetch_order(order_id, symbol) # 최종 상태 확인
-            if order_status['status'] != 'closed' and order_status['filled'] == 0:
-                # 주문 취소
-                await self.exchange.cancel_order(order_id, symbol)
-                print(f"⚠️ [{symbol}] 지정가 주문 미체결로 취소됨. ID: {order_id}")
-
-                if force_market:
-                    print(f"🔥 [{symbol}] 시장가 주문으로 전환. 수량: {amount}")
-                    market_order = await self._create_market_order_with_retry(symbol, side, amount, params)
-                    print(f"🚀 [{symbol}] 시장가 주문 체결 완료. 가격: {market_order['average']}")
-                    return market_order['average']
-                else:
-                    print(f"❌ [{symbol}] 지정가 미체결 후 시장가 전환 설정 OFF. 주문 취소만 진행.")
-                    return None
-            
-            elif order_status['filled'] > 0 and order_status['status'] != 'closed': # 부분 체결 후 타임아웃
-                print(f"⚠️ [{symbol}] 지정가 부분 체결 후 타임아웃. Filled: {order_status['filled']}, Remaining: {order_status['remaining']}")
-                if force_market and order_status['remaining'] > 0:
-                    # 잔여 물량 시장가 처리
-                    print(f"🔥 [{symbol}] 잔여 물량 시장가 주문 전환. 수량: {order_status['remaining']}")
-                    market_order = await self._create_market_order_with_retry(symbol, side, order_status['remaining'], params)
-                    print(f"🚀 [{symbol}] 잔여 물량 시장가 체결 완료. 가격: {market_order['average']}")
-                    return market_order['average'] # 부분 체결 + 시장가 체결의 평균 가격 반환 로직 필요. 단순화.
-                else:
-                    return order_status['average'] if order_status['filled'] > 0 else None
-
-            return None # 어떤 경우에도 체결되지 않았을 때
-
+            # 3. 타임아웃: 취소 후 시장가 전환
+            await self.exchange.cancel_order(order_id, symbol)
+            if force_market:
+                market_order = await self._create_market_order_with_retry(symbol, side, amount, params)
+                return market_order['average']
+            return None
         except Exception as e:
-            print(f"❌ 스마트 주문 실행 중 에러 ({symbol}): {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"❌ 주문 실행 에러 ({symbol}): {e}")
             return None
 
     async def execute_order(self, symbol, side, amount, reduce_only=False):
-        """모드에 따라 주문 실행 여부 결정"""
-        
-        # 1. 정지 상태면 즉시 리턴
-        if self.mode == 'OFF':
-            return None
+        if self.mode == 'OFF': return None
 
-        # 가격 정보 가져오기 (모의매매에서도 가격은 필요함)
         try:
             ticker = await self.exchange.fetch_ticker(symbol)
             current_price = ticker['last']
-        except Exception as e:
-            print(f"❌ 가격 조회 실패 ({symbol}): {e}")
-            return None
+        except: return None
 
         msg_type = "청산" if reduce_only else "진입"
 
-        # 2. 모의매매 (PAPER)
+        # 1. 모의매매 (PAPER)
         if self.mode == 'PAPER':
-            # Apply slippage for a more realistic paper trading simulation
-            if side == 'buy':
-                current_price *= (1 + CONFIG['SLIPPAGE_PCT'])
-            elif side == 'sell':
-                current_price *= (1 - CONFIG['SLIPPAGE_PCT'])
+            slippage = CONFIG['SLIPPAGE_PCT']
+            # 슬리피지 적용된 가상 체결가
+            exec_price = current_price * (1 + slippage) if side == 'buy' else current_price * (1 - slippage)
             
-            log_msg = f"🧪 [모의매매] {symbol} {side.upper()} {msg_type} 시그널! (가격: {current_price}, 수량: {amount:.4f})"
+            log_msg = f"🧪 [모의] {symbol} {side.upper()} {msg_type} (가격: {exec_price:.4f}, 수량: {amount:.4f})"
             print(log_msg)
-            if self.messenger:
-                # 모의매매용 별도 알림 함수 호출 or 기존 함수에 플래그 전달
-                self.messenger(symbol, side, current_price, amount, f"[모의] {msg_type}")
-            return current_price # 가상 체결 가격 반환
+            if self.messenger: self.messenger(symbol, side, exec_price, amount, f"[모의] {msg_type}")
+            return exec_price
 
-        # 3. 실매매 (REAL)
+        # 2. 실매매 (REAL)
         if self.mode == 'REAL':
             exec_price = await self._smart_execute_order(symbol, side, amount, reduce_only)
             if exec_price:
-                print(f"🚀 [실매매] {symbol} {side} 체결 완료 (가격: {exec_price})")
-                if self.messenger:
-                    self.messenger(symbol, side, exec_price, amount, msg_type)
+                print(f"🚀 [실매매] {symbol} {side} 체결 (가격: {exec_price})")
+                if self.messenger: self.messenger(symbol, side, exec_price, amount, msg_type)
                 return exec_price
             else:
-                error_msg = f"❌ [CRITICAL] 주문 최종 실패 ({symbol} {side} {amount:.4f}): 스마트 실행 실패"
-                print(error_msg)
-                if self.messenger:
-                    self.messenger(symbol, side, 0, amount, f"[긴급] 주문 실패", mention_everyone=True)
+                if self.messenger: self.messenger(symbol, side, 0, amount, "[긴급] 주문 실패", mention_everyone=True)
                 return None
 
-    # ----------------------------------------------
-    # [NEW] 디스코드 봇 보고용 함수
-    # ----------------------------------------------
+    # -----------------------------------------------------------
+    # [Info Section] Status Check
+    # -----------------------------------------------------------
     async def get_balance(self):
-        """현재 USDT 잔고 조회"""
+        # [NEW] 모의매매면 가짜 돈 100불 리턴
+        if self.mode == 'PAPER':
+            return 100.0, 100.0
+
         try:
             balance = await self.exchange.fetch_balance()
             return balance['free']['USDT'], balance['total']['USDT']
-        except Exception as e:
-            print(f"❌ 잔고 조회 실패: {e}")
-            return 0.0, 0.0
+        except: return 0.0, 0.0
 
     async def get_positions(self):
-        """현재 활성화된 포지션 조회"""
+        """실매매(REAL) 모드일 때만 거래소 API 포지션 반환"""
+        if self.mode != 'REAL':
+            # PAPER 모드일 땐 DB에 있는 내용을 포지션 객체처럼 변환해서 반환
+            positions = []
+            for sym, data in self.state.items():
+                pnl = (data['high'] - data['entry_price']) * data['amount'] if data['side'] == 'buy' else (data['entry_price'] - data['low']) * data['amount']
+                # 단순화된 PNL 계산
+                positions.append({
+                    'symbol': sym,
+                    'side': data['side'],
+                    'amount': data['amount'],
+                    'entryPrice': data['entry_price'],
+                    'unrealizedPnl': 0.0, # 모의매매 실시간 PnL 계산은 복잡하므로 0 처리하거나 추후 구현
+                    'leverage': CONFIG['LEVERAGE']
+                })
+            return positions
+
+        # REAL 모드
         active_positions = []
         try:
-            # 바이낸스는 모든 심볼 포지션을 줌, 필터링 필요
             positions = await self.exchange.fetch_positions()
             for p in positions:
                 if float(p['contracts']) > 0:
@@ -470,194 +404,219 @@ class BinanceTrader:
                         'leverage': p['leverage']
                     })
             return active_positions
-        except Exception as e:
-            print(f"❌ 포지션 조회 실패: {e}")
-            return []
-
-    async def force_close(self, symbol):
-        """디스코드 명령어로 특정 심볼 강제 청산"""
-        try:
-            positions_data = await self.exchange.fetch_positions([symbol])
-            positions = [p for p in positions_data if p['symbol'] == symbol]
-            if not positions:
-                return f"⚠️ {symbol} 활성화된 포지션이 없습니다."
-            
-            pos_amt = float(positions[0]['contracts'])
-            pos_side = positions[0]['side']
-            
-            if pos_amt == 0:
-                return f"⚠️ {symbol} 포지션 수량이 0입니다."
-
-            # 반대 주문으로 청산
-            side = 'sell' if pos_side == 'long' else 'buy'
-            price = await self.execute_order(symbol, side, pos_amt, reduce_only=True)
-            
-            if price:
-                # 상태 파일에서 삭제
-                if symbol in self.state: del self.state[symbol] # Keep for in-memory state consistency
-                self._delete_position_from_db(symbol) # Call new method to remove from DB
-                return f"✅ **{symbol}** 강제 청산 완료! (가격: {price})"
-            else:
-                return f"❌ {symbol} 청산 주문 실패."
-                
-        except Exception as e:
-            return f"❌ 강제 청산 중 에러: {e}"
-
+        except: return []
 
     async def safe_force_close(self, symbol):
-        """🚨 안전한 강제 청산 (주문 취소 -> 청산 -> DB삭제)"""
-        async with self.trade_lock: # 락을 걸어서 스케줄러 간섭 차단
-            print(f"🔒 [{symbol}] 강제 청산 작업 시작 (Lock 획득)")
-            # 1. 미체결 주문 취소
-            try:
-                await self.exchange.cancel_all_orders(symbol)
-                print(f"🧹 [{symbol}] 미체결 주문 일괄 취소 완료")
-            except Exception as e:
-                print(f"⚠️ [{symbol}] 미체결 주문 취소 중 오류 (무시): {e}")
-
-            # 2. 포지션 청산 (기존 로직 재활용)
-            res = await self.force_close(symbol)
+        async with self.trade_lock:
+            # 1. 미체결 취소
+            try: await self.exchange.cancel_all_orders(symbol)
+            except: pass
             
-            print(f"🔓 [{symbol}] 강제 청산 작업 완료 (Lock 해제)")
-            return res
+            # 2. 포지션 확인 및 청산
+            # DB 상태 우선 확인
+            if symbol in self.state:
+                data = self.state[symbol]
+                side = 'sell' if data['side'] == 'buy' else 'buy'
+                amount = data['amount']
+                
+                res = await self.execute_order(symbol, side, amount, reduce_only=True)
+                if res:
+                    self._delete_position_from_db(symbol)
+                    del self.state[symbol]
+                    return f"✅ {symbol} 강제 청산 완료 (Mode: {self.mode})"
+            
+            return f"⚠️ {symbol} 청산할 포지션 없음 (Mode: {self.mode})"
 
-    # ----------------------------------------------
-    # 메인 로직 (외부에서 호출)
-    # ----------------------------------------------
+    # -----------------------------------------------------------
+    # [Main Logic] V13 Strategy + Portfolio Mgmt + DB Isolation
+    # -----------------------------------------------------------
     async def run_logic(self):
         async with self.trade_lock:
             if self.mode == 'OFF':
-                return "⏸️ 봇이 정지 상태입니다."
+                return "⏸️ 봇 정지 상태"
             
-            # [NEW] 쿨다운 카운터 감소
-            for symbol in list(self.cooldowns.keys()):
-                self.cooldowns[symbol] -= 1
-                if self.cooldowns[symbol] <= 0:
-                    del self.cooldowns[symbol]
+            # 쿨다운 감소
+            for s in list(self.cooldowns.keys()):
+                self.cooldowns[s] -= 1
+                if self.cooldowns[s] <= 0: del self.cooldowns[s]
 
             try:
-                balance = await self.exchange.fetch_balance()
-                usdt_balance = balance['free']['USDT']
+                if self.mode == 'PAPER':
+                    # 모의매매면 100 달러가 있다고 가정 (고정)
+                    total_equity = 100.0
+                    # 디스코드 표시용 변수는 별도로 안 쓰이지만 로그 확인용
+                    print(f"🧪 [모의] 가상 자산 $10,000 적용됨")
+                else:
+                    # 실매매면 실제 바이낸스 잔고 조회
+                    balance_data = await self.exchange.fetch_balance()
+                    total_equity = balance_data['total']['USDT']
             except Exception as e:
                 return f"❌ 잔고 조회 실패: {e}"
 
-            self.state = self._load_positions_from_db()
+            # 1. 현재 보유 포지션 동기화 (메모리 vs 실제)
+            # PAPER 모드: DB(self.state)가 곧 진실
+            # REAL 모드: API 조회 결과와 DB를 비교해야 하지만, 여기선 DB를 기준으로 하되 API와 대조하는 로직은 생략하고 DB를 믿고 감.
+            # (실매매 시 봇 외부에서 포지션 건드리면 안됨)
             
+            current_pos_count = len(self.state)
+            
+            # ---------------- Loop Start ----------------
             for symbol in CONFIG['SYMBOLS']:
+                # 데이터 준비
                 df = await self.fetch_data_and_features(symbol)
                 if df is None: continue
                 
+                # 현재 지표 값
                 curr_price = df['close'].iloc[-1]
                 curr_rsi = df['RSI_14'].iloc[-1]
                 curr_ema = df[f'EMA_{self.EMA_PERIOD}'].iloc[-1]
                 curr_atr = df['ATRr_14'].iloc[-1]
 
+                # 국면 식별
                 regime, r_map = self.get_hmm_regime(df, symbol)
                 if regime is None: continue
                 
-                positions_raw = await self.exchange.fetch_positions([symbol])
-                positions = [p for p in positions_raw if p['symbol'] == symbol and float(p['contracts']) > 0]
-                pos_amt = float(positions[0]['contracts']) if positions else 0.0
-                pos_side = positions[0]['side'] if positions else None
-                has_position = pos_amt > 0
+                # 포지션 보유 여부
+                has_position = symbol in self.state
                 
-                risk_setting = self.get_risk_setting(symbol)
-                leverage = risk_setting['leverage']
-                
-                # --- 1. 청산 로직 (V8) ---
+                # ============================================
+                # [A] 청산 및 관리 로직 (보유 중일 때)
+                # ============================================
                 if has_position:
-                    state = self.state.get(symbol, {})
-                    entry_price = state.get('entry_price', 0)
-                    if not entry_price: continue # Should not happen
-
-                    pnl_pct = (curr_price - entry_price) / entry_price if pos_side == 'long' else (entry_price - curr_price) / entry_price
+                    state = self.state[symbol]
+                    entry_price = state['entry_price']
                     stop_loss_price = state.get('stop_loss_price', 0)
-
-                    # 본절 로직
-                    if stop_loss_price != entry_price and pnl_pct >= self.BREAKEVEN_PNL_PCT:
-                        stop_loss_price = entry_price
-                        self.state[symbol]['stop_loss_price'] = entry_price
-                        self._upsert_position_to_db(symbol, state['entry_price'], state['high'], state['low'], state['side'], state['amount'], state['entry_regime'], entry_price)
-                        print(f"💰 [{symbol}] 본절 전환! StopLoss -> {entry_price}")
-
+                    highest_price = state.get('high', entry_price)
+                    lowest_price = state.get('low', entry_price)
+                    entry_regime = state.get('entry_regime', 'unknown')
+                    pos_side = state['side']
+                    pos_amt = state['amount']
+                    
+                    # 안전장치: SL이 0이면 초기화
+                    if stop_loss_price == 0:
+                        dist = curr_atr * CONFIG['STOP_LOSS_ATR']
+                        stop_loss_price = entry_price - dist if pos_side == 'buy' else entry_price + dist
+                    
                     should_close = False
-                    exit_reason = "Unknown"
+                    exit_reason = ""
 
-                    # ATR 기반 동적 손절
-                    if pos_side == 'long' and curr_price < stop_loss_price:
-                        should_close = True
-                        exit_reason = "StopLoss" if stop_loss_price != entry_price else "Breakeven"
-                    elif pos_side == 'short' and curr_price > stop_loss_price:
-                        should_close = True
-                        exit_reason = "StopLoss" if stop_loss_price != entry_price else "Breakeven"
+                    # A-1. 정적 손절 (Static SL)
+                    if pos_side == 'buy' and curr_price < stop_loss_price:
+                        should_close = True; exit_reason = "StopLoss"
+                    elif pos_side == 'sell' and curr_price > stop_loss_price:
+                        should_close = True; exit_reason = "StopLoss"
 
-                    # 트레일링 스탑
+                    # A-2. 동적 트레일링 스탑 (V13 Dynamic ATR Trailing)
                     if not should_close:
-                        if pos_side == 'long':
-                            new_high = max(state['high'], curr_price)
-                            if new_high > state['high']:
-                                self.state[symbol]['high'] = new_high
-                                self._upsert_position_to_db(symbol, entry_price, new_high, state['low'], pos_side, pos_amt, state['entry_regime'], stop_loss_price)
-                            if (new_high - curr_price) / new_high > self.TRAIL_PCT and curr_price > entry_price:
-                                should_close = True
-                                exit_reason = "TrailingStop"
-                        elif pos_side == 'short':
-                            new_low = min(state['low'], curr_price)
-                            if new_low < state['low']:
-                                self.state[symbol]['low'] = new_low
-                                self._upsert_position_to_db(symbol, entry_price, state['high'], new_low, pos_side, pos_amt, state['entry_regime'], stop_loss_price)
-                            if (curr_price - new_low) / new_low > self.TRAIL_PCT and curr_price < entry_price:
-                                should_close = True
-                                exit_reason = "TrailingStop"
+                        trail_trigger = curr_atr * CONFIG['TRAIL_TRIGGER_ATR'] 
+                        trail_dist = curr_atr * CONFIG['TRAIL_DIST_ATR']
+                        
+                        if pos_side == 'buy':
+                            # 고점 갱신
+                            if curr_price > highest_price:
+                                highest_price = curr_price
+                                self._upsert_position_to_db(symbol, entry_price, highest_price, lowest_price, pos_side, pos_amt, entry_regime, stop_loss_price)
+                            
+                            # 트레일링 발동: (최고가 - 진입가) > Trigger
+                            if highest_price >= entry_price + trail_trigger:
+                                new_stop = highest_price - trail_dist
+                                # 스탑 상향 조정만 허용
+                                if new_stop > stop_loss_price:
+                                    stop_loss_price = new_stop
+                                    self._upsert_position_to_db(symbol, entry_price, highest_price, lowest_price, pos_side, pos_amt, entry_regime, stop_loss_price)
+                                    print(f"📈 [{symbol}] Trailing Stop 상향 -> {stop_loss_price:.2f}")
+                        
+                        elif pos_side == 'sell':
+                            # 저점 갱신
+                            if curr_price < lowest_price:
+                                lowest_price = curr_price
+                                self._upsert_position_to_db(symbol, entry_price, highest_price, lowest_price, pos_side, pos_amt, entry_regime, stop_loss_price)
+                            
+                            # 트레일링 발동
+                            if lowest_price <= entry_price - trail_trigger:
+                                new_stop = lowest_price + trail_dist
+                                # 스탑 하향 조정만 허용
+                                if new_stop < stop_loss_price:
+                                    stop_loss_price = new_stop
+                                    self._upsert_position_to_db(symbol, entry_price, highest_price, lowest_price, pos_side, pos_amt, entry_regime, stop_loss_price)
+                                    print(f"📉 [{symbol}] Trailing Stop 하향 -> {stop_loss_price:.2f}")
 
-                    # 국면 전환 청산
-                    entry_regime = state.get('entry_regime')
+                    # A-3. 국면 전환 청산 (Regime Change)
                     if not should_close:
-                        if entry_regime == 'bull' and regime == r_map['bear']:
-                            should_close = True; exit_reason = "RegimeChange"
-                        elif entry_regime == 'bear' and regime == r_map['bull']:
-                            should_close = True; exit_reason = "RegimeChange"
+                        if (entry_regime == 'bull' and regime == r_map['bear']) or \
+                           (entry_regime == 'bear' and regime == r_map['bull']):
+                            should_close = True; exit_reason = f"RegimeChange ({entry_regime}->New)"
 
+                    # 실행
                     if should_close:
                         print(f"🔥 [{symbol}] 포지션 청산 ({exit_reason})")
-                        await self.execute_order(symbol, 'sell' if pos_side == 'long' else 'buy', pos_amt, reduce_only=True)
+                        # 청산 주문
+                        close_side = 'sell' if pos_side == 'buy' else 'buy'
+                        await self.execute_order(symbol, close_side, pos_amt, reduce_only=True)
+                        
+                        # DB 및 메모리 삭제
                         self._delete_position_from_db(symbol)
-                        if symbol in self.state: del self.state[symbol]
-                        self.cooldowns[symbol] = self.COOLDOWN_BARS # 쿨다운 설정
+                        del self.state[symbol]
+                        
+                        # 쿨다운 및 슬롯 반환
+                        self.cooldowns[symbol] = self.COOLDOWN_BARS
+                        current_pos_count -= 1
                         continue
-                
-                # --- 2. 진입 로직 (V8) ---
+
+                # ============================================
+                # [B] 진입 로직 (미보유 일 때)
+                # ============================================
                 else:
-                    if symbol in self.cooldowns: # 쿨다운 체크
-                        print(f"❄️ [{symbol}] 쿨다운 중... ({self.cooldowns[symbol]}시간 남음)")
-                        continue
-
-                    await self.set_leverage(symbol, leverage)
-                    qty = self.calculate_position_size(usdt_balance, curr_atr)
-                    if qty <= 0: continue
-                    qty *= leverage
+                    # B-1. 자금 관리 & 필터
+                    if current_pos_count >= CONFIG['MAX_OPEN_POSITIONS']: continue # 슬롯 가득 참
+                    if symbol in self.cooldowns: continue 
                     
-                    side_to_enter, entry_regime_name = None, None
+                    # B-2. 진입 시그널 (V13 Strategy)
+                    entry_signal = None
+                    target_regime = None
 
+                    # Bull: Price > EMA & RSI [30, 65]
                     if regime == r_map['bull']:
-                        if curr_rsi < self.RSI_BUY and curr_price > curr_ema:
-                            side_to_enter, entry_regime_name = 'buy', 'bull'
-                    elif regime == r_map['bear']:
-                        if curr_rsi > self.RSI_SELL and curr_price < curr_ema:
-                            side_to_enter, entry_regime_name = 'sell', 'bear'
+                        if curr_price > curr_ema and \
+                           CONFIG['RSI_BUY_LOWER'] < curr_rsi < CONFIG['RSI_BUY_UPPER']:
+                            entry_signal = 'buy'; target_regime = 'bull'
                     
-                    if side_to_enter:
-                        exec_price = await self.execute_order(symbol, side_to_enter, qty)
+                    # Bear: Price < EMA & RSI [35, 70]
+                    elif regime == r_map['bear']:
+                        if curr_price < curr_ema and \
+                           CONFIG['RSI_SELL_LOWER'] < curr_rsi < CONFIG['RSI_SELL_UPPER']:
+                            entry_signal = 'sell'; target_regime = 'bear'
+                    
+                    # B-3. 진입 실행
+                    if entry_signal:
+                        leverage = CONFIG['LEVERAGE']
+                        await self.set_leverage(symbol, leverage)
+                        
+                        # 포트폴리오 분산 금액 계산
+                        entry_margin = self.calculate_position_size_v2(total_equity, current_pos_count, leverage)
+                        if entry_margin == 0: continue
+                        
+                        qty_contract = (entry_margin * leverage) / curr_price
+                        
+                        # 주문 실행
+                        exec_price = await self.execute_order(symbol, entry_signal, qty_contract)
+                        
                         if exec_price:
-                            stop_loss_price = exec_price - (curr_atr * self.STOP_LOSS_ATR_MULTIPLIER) if side_to_enter == 'buy' else exec_price + (curr_atr * self.STOP_LOSS_ATR_MULTIPLIER)
+                            # 초기 손절가 계산
+                            dist = curr_atr * CONFIG['STOP_LOSS_ATR']
+                            init_sl = exec_price - dist if entry_signal == 'buy' else exec_price + dist
+                            
+                            # DB 저장 (mode 포함)
+                            self._upsert_position_to_db(
+                                symbol, exec_price, exec_price, exec_price, 
+                                entry_signal, qty_contract, target_regime, init_sl
+                            )
+                            # 메모리 업데이트
                             self.state[symbol] = {
                                 'entry_price': exec_price, 'high': exec_price, 'low': exec_price,
-                                'side': side_to_enter, 'amount': qty, 'entry_regime': entry_regime_name,
-                                'stop_loss_price': stop_loss_price
+                                'side': entry_signal, 'amount': qty_contract, 
+                                'entry_regime': target_regime, 'stop_loss_price': init_sl
                             }
-                            self._upsert_position_to_db(
-                                symbol, exec_price, exec_price, exec_price, side_to_enter, qty, entry_regime_name, stop_loss_price
-                            )
-                            print(f"🚀 [{symbol}] 신규 진입! ({side_to_enter} @ {exec_price}) SL: {stop_loss_price}")
+                            current_pos_count += 1 # 루프 내 카운트 증가
 
             return "✅ 매매 로직 실행 완료"
