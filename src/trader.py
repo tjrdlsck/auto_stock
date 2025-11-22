@@ -206,7 +206,7 @@ class BinanceTrader:
         conn.close()
 
     # -----------------------------------------------------------
-    # [중요] 거래 이력 저장 및 통계 조회 (개선됨)
+    # [중요] 거래 이력 저장 및 통계 조회
     # -----------------------------------------------------------
     def _save_trade_history(self, symbol, side, entry_price, exit_price, amount):
         """청산 시 거래 이력 저장 및 모의투자 잔고 업데이트"""
@@ -236,14 +236,11 @@ class BinanceTrader:
         # 2. 모의투자일 경우 DB 잔고 업데이트 (영구 저장)
         if self.mode == 'PAPER':
             try:
-                # 현재 저장된 잔고 조회 (없으면 10000 기본값)
                 cursor.execute("SELECT value FROM system_settings WHERE key='paper_balance'")
                 res = cursor.fetchone()
                 current_bal = float(res[0]) if res else 10000.0
                 
                 new_bal = current_bal + net_pnl
-                
-                # 잔고 업데이트
                 cursor.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('paper_balance', ?)", (str(new_bal),))
                 print(f"💰 [Paper] 잔고 업데이트: ${current_bal:.2f} -> ${new_bal:.2f} (PnL: {net_pnl:+.2f})")
             except Exception as e:
@@ -255,19 +252,15 @@ class BinanceTrader:
         return net_pnl, total_fee
 
     def get_trade_history(self, target_mode=None):
-        """DB에서 거래 이력을 조회하고 웹 시각화용 통계 데이터를 계산하여 반환"""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
         query = "SELECT * FROM trade_history"
         params = []
-        
         if target_mode:
             query += " WHERE mode = ?"
             params.append(target_mode)
-            
-        # 차트 생성을 위해 시간순 정렬 (오름차순)
         query += " ORDER BY id ASC"
         
         cursor.execute(query, tuple(params))
@@ -275,8 +268,6 @@ class BinanceTrader:
         conn.close()
         
         trades = [dict(row) for row in rows]
-        
-        # --- 통계 데이터 계산 ---
         total_pnl = 0.0
         win_count = 0
         max_pnl = 0.0
@@ -287,23 +278,13 @@ class BinanceTrader:
             pnl = t['pnl']
             cumulative_pnl += pnl
             total_pnl += pnl
-            
-            if pnl > 0: 
-                win_count += 1
-            
-            if pnl > max_pnl:
-                max_pnl = pnl
-            
-            # 차트용 데이터 (날짜, 누적 손익)
-            equity_curve.append({
-                "time": t['timestamp'], 
-                "value": cumulative_pnl
-            })
+            if pnl > 0: win_count += 1
+            if pnl > max_pnl: max_pnl = pnl
+            equity_curve.append({"time": t['timestamp'], "value": cumulative_pnl})
 
         total_trades = len(trades)
         win_rate = round((win_count / total_trades * 100), 1) if total_trades > 0 else 0.0
         
-        # 요약 정보
         summary = {
             "total_pnl": round(total_pnl, 2),
             "win_rate": win_rate,
@@ -311,15 +292,12 @@ class BinanceTrader:
             "best_trade": round(max_pnl, 2)
         }
 
-        # 상세 거래 내역은 최신순(역순)으로 반환
-        reversed_trades = trades[::-1]
-
         return {
             "summary": summary,
             "equity_curve": equity_curve,
-            "trades": reversed_trades
+            "trades": trades[::-1]
         }
-# [추가] 현재 모드와 상관없이, DB에 저장된 모의투자 잔고만 조회하는 메서드
+
     def get_saved_paper_balance(self):
         val = self._get_setting('paper_balance')
         return float(val) if val else 10000.0
@@ -337,7 +315,6 @@ class BinanceTrader:
         self.state = self._load_positions_from_db()
         self.cooldowns = {}
         
-        # DB에 모드 저장
         self._set_setting('mode', new_mode)
         
         msg = f"✅ 시스템 모드가 **{new_mode}**로 변경되었습니다."
@@ -347,7 +324,6 @@ class BinanceTrader:
     # -----------------------------------------------------------
     # [Logic Section] Trading Helper Methods
     # -----------------------------------------------------------
-
     async def set_leverage(self, symbol, leverage):
         try:
             await self.exchange.set_leverage(leverage, symbol)
@@ -473,7 +449,6 @@ class BinanceTrader:
         # 1. 모의매매 (PAPER)
         if self.mode == 'PAPER':
             slippage = self.get_conf('SLIPPAGE_PCT', 0.0002)
-            
             if side == 'buy':
                 exec_price = current_price * (1 + slippage)
             else:
@@ -498,20 +473,17 @@ class BinanceTrader:
     # [Info Section]
     # -----------------------------------------------------------
     async def get_balance(self):
-        # 모의투자일 경우 DB에 저장된 잔고 불러오기
         if self.mode == 'PAPER':
             try:
                 saved_balance = self._get_setting('paper_balance')
                 if saved_balance:
                     return float(saved_balance), float(saved_balance)
                 else:
-                    # 저장된 잔고가 없으면 10000으로 초기화
                     self._set_setting('paper_balance', 10000.0)
                     return 10000.0, 10000.0
             except:
                 return 10000.0, 10000.0
 
-        # 실전 매매일 경우 거래소 조회
         try:
             balance = await self.exchange.fetch_balance()
             return balance['free']['USDT'], balance['total']['USDT']
@@ -527,7 +499,7 @@ class BinanceTrader:
                     'side': data['side'],
                     'amount': data['amount'],
                     'entryPrice': data['entry_price'],
-                    'unrealizedPnl': 0.0, # 모의투자는 미실현손익 실시간 계산이 복잡하므로 0으로 표기 (필요시 추가 구현 가능)
+                    'unrealizedPnl': 0.0, 
                     'leverage': leverage,
                     'mode': self.mode
                 })
@@ -550,31 +522,66 @@ class BinanceTrader:
             return active_positions
         except: return []
 
+    # -----------------------------------------------------------
+    # [청산 로직 - 수정됨]
+    # -----------------------------------------------------------
     async def safe_force_close(self, symbol):
+        """단일 포지션 강제 청산 (안전 로직 포함)"""
+        symbol = symbol.strip() # 안전장치: 공백 제거
+        
         async with self.trade_lock:
+            # 1. 미체결 주문 취소 시도
             try: await self.exchange.cancel_all_orders(symbol)
             except: pass
             
-            if symbol in self.state:
-                data = self.state[symbol]
-                side = 'sell' if data['side'] == 'buy' else 'buy'
-                amount = data['amount']
-                entry_price = data['entry_price']
-                
-                exec_price = await self.execute_order(symbol, side, amount, reduce_only=True)
-                if exec_price:
-                    # 이력 저장 및 잔고 업데이트
-                    pnl, fee = self._save_trade_history(symbol, data['side'], entry_price, exec_price, amount)
-                    
-                    self._delete_position_from_db(symbol)
-                    del self.state[symbol]
-                    msg = f"✅ {symbol} 청산 완료. PnL: ${pnl:.2f}"
-                    await self.notification.log(msg, level="INFO")
-                    return msg
+            # 2. 포지션 데이터 확인
+            if symbol not in self.state:
+                msg = f"⚠️ {symbol} 청산 실패: 관리 중인 포지션이 아닙니다."
+                await self.notification.log(msg, level="WARN")
+                return msg
+
+            data = self.state[symbol]
+            side = 'sell' if data['side'] == 'buy' else 'buy'
+            amount = data['amount']
             
-            msg = f"⚠️ {symbol} 청산할 포지션 없음"
-            await self.notification.log(msg, level="WARN")
-            return msg
+            # 3. 주문 실행 (reduce_only=True)
+            exec_price = await self.execute_order(symbol, side, amount, reduce_only=True)
+            
+            # 4. 결과 처리
+            if exec_price:
+                # 이력 저장 및 잔고 업데이트
+                pnl, fee = self._save_trade_history(symbol, data['side'], data['entry_price'], exec_price, amount)
+                
+                self._delete_position_from_db(symbol)
+                del self.state[symbol]
+                
+                msg = f"✅ {symbol} 청산 완료. PnL: ${pnl:.2f}"
+                await self.notification.log(msg, level="INFO")
+                return msg
+            else:
+                msg = f"❌ {symbol} 청산 주문 실패 (API 오류 또는 잔고 부족)"
+                await self.notification.log(msg, level="ERROR")
+                return msg
+    
+    async def close_all_positions(self):
+        """현재 보유 중인 모든 포지션 일괄 청산 (Stop 시 호출됨)"""
+        if not self.state:
+            return "ℹ️ 청산할 포지션이 없습니다."
+
+        # 락 없이 진행 (safe_force_close가 내부적으로 락을 사용하므로)
+        # state의 키를 리스트로 복사 (순회 중 삭제 방지)
+        symbols = list(self.state.keys())
+        
+        await self.notification.log(f"🚨 시스템 정지로 인한 일괄 청산 시작 ({len(symbols)}개)", level="SYSTEM")
+        
+        results = []
+        for symbol in symbols:
+            res = await self.safe_force_close(symbol)
+            results.append(res)
+            # 너무 빠른 연속 API 호출 방지
+            await asyncio.sleep(0.2) 
+            
+        return "\n".join(results)
 
     async def run_logic(self):
         async with self.trade_lock:
@@ -584,9 +591,7 @@ class BinanceTrader:
                 self.cooldowns[s] -= 1
                 if self.cooldowns[s] <= 0: del self.cooldowns[s]
 
-            # 자산 조회 (DB 기반 모의잔고 포함)
             free_equity, total_equity = await self.get_balance()
-
             current_pos_count = len(self.state)
             target_symbols = self.get_conf('SYMBOLS', [])
             
@@ -619,7 +624,6 @@ class BinanceTrader:
                     
                     stop_loss_atr = self.get_conf('STOP_LOSS_ATR', 2.0)
                     
-                    # 초기 스탑로스 설정 (DB에 없을 경우)
                     if stop_loss_price == 0:
                         dist = curr_atr * stop_loss_atr
                         stop_loss_price = entry_price - dist if pos_side == 'buy' else entry_price + dist
@@ -627,7 +631,7 @@ class BinanceTrader:
                     should_close = False
                     exit_reason = ""
 
-                    # 1. 스탑로스 체크
+                    # 1. 스탑로스
                     if pos_side == 'buy' and curr_price < stop_loss_price: should_close = True; exit_reason = "StopLoss"
                     elif pos_side == 'sell' and curr_price > stop_loss_price: should_close = True; exit_reason = "StopLoss"
 
@@ -655,20 +659,18 @@ class BinanceTrader:
                                     stop_loss_price = new_stop
                                     self._upsert_position_to_db(symbol, entry_price, highest_price, lowest_price, pos_side, pos_amt, entry_regime, stop_loss_price)
 
-                    # 3. 국면 변화 청산 (HMM)
+                    # 3. 국면 변화
                     if not should_close:
                         if (entry_regime == 'bull' and regime == r_map['bear']) or \
                            (entry_regime == 'bear' and regime == r_map['bull']):
                             should_close = True; exit_reason = "RegimeChange"
 
-                    # 청산 실행
                     if should_close:
                         await self.notification.log(f"🔥 [{symbol}] 청산 신호 ({exit_reason})", level="INFO")
                         close_side = 'sell' if pos_side == 'buy' else 'buy'
                         exec_price = await self.execute_order(symbol, close_side, pos_amt, reduce_only=True)
                         
                         if exec_price:
-                            # 이력 저장 및 잔고 업데이트 (Paper Balance 반영됨)
                             pnl, fee = self._save_trade_history(symbol, pos_side, entry_price, exec_price, pos_amt)
                             await self.notification.log(f"💰 실현 손익: ${pnl:.2f}", level="INFO")
                             
