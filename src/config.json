@@ -1,0 +1,27 @@
+{
+    "SYMBOLS": [
+        "BTC/USDT",
+        "ETH/USDT",
+        "SOL/USDT",
+        "DOGE/USDT",
+        "XRP/USDT"
+    ],
+    "TIMEFRAME": "1h",
+    "FETCH_DAYS": 1500,
+    "LEVERAGE": 2.0,
+    "COMMISSION": 0.0005,
+    "SLIPPAGE_PCT": 0.0002,
+    "MAX_OPEN_POSITIONS": 5,
+    "RSI_BUY_LOWER": 30,
+    "RSI_BUY_UPPER": 65,
+    "RSI_SELL_LOWER": 35,
+    "RSI_SELL_UPPER": 70,
+    "STOP_LOSS_ATR": 2.0,
+    "TRAIL_TRIGGER_ATR": 2.0,
+    "TRAIL_DIST_ATR": 2.0,
+    "RETRAIN_INTERVAL_HOURS": 24,
+    "GENERATE_BACKTEST_IMAGES": true,
+    "LIMIT_ORDER_TIMEOUT_SEC": 10,
+    "FORCE_MARKET_ORDER_ON_TIMEOUT": true,
+    "CANDLE_LIMIT": 300
+}

@@ -1,31 +1,34 @@
-# 1. 파이썬 3.13 슬림 버전
+# 1. Python 3.10 Slim 버전을 기반으로 사용 (가볍고 안정적)
 FROM python:3.13-slim
 
-# 2. 타임존 설정 (한국 시간)
-ENV TZ=Asia/Seoul
-RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+# 2. 환경 변수 설정
+# 파이썬 로그가 버퍼링 없이 즉시 출력되도록 설정 (로그 확인 용이)
+ENV PYTHONUNBUFFERED=1
+# .pyc 파일 생성 방지
+ENV PYTHONDONTWRITEBYTECODE=1
 
-# 3. 필수 시스템 패키지 설치
+# 3. 작업 디렉토리 생성
+WORKDIR /app
+
+# 4. 시스템 의존성 설치 (numpy, hmmlearn 등 빌드에 필요)
 RUN apt-get update && apt-get install -y \
     build-essential \
     gcc \
+    g++ \
     && rm -rf /var/lib/apt/lists/*
 
-# 4. 도커 내 기본 작업 폴더 설정
-WORKDIR /app
-
 # 5. 의존성 파일 복사 및 설치
-# (requirements.txt가 src 바깥에 있으므로 /app에 복사)
+# 캐시 효율성을 위해 requirements.txt를 먼저 복사
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# 6. 소스 코드 전체 복사
-# (현재 폴더의 모든 것을 /app으로 복사 -> /app/src가 생김)
+# 6. 전체 소스 코드 복사
 COPY . .
 
-# [핵심 수정] 7. 실행 작업 경로를 src 내부로 변경
-# 파이썬 코드가 src 안에 있으므로 여기로 들어가야 import 에러가 안 납니다.
-WORKDIR /app/src
+# 7. API 서버 포트 노출 (main.py 설정값 58000)
+EXPOSE 58000
 
-# 8. 실행 명령어
-CMD ["python", "discord_main.py"]
+# 8. 컨테이너 실행 시 메인 스크립트 실행
+# src 폴더 내부의 main.py를 실행
+CMD ["python", "src/main.py"]

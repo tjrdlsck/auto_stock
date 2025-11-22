@@ -1,16 +1,24 @@
-ccxt>=4.0.0
-pandas>=1.5.0
-pandas_ta>=0.3.14b0
-numpy>=1.20.0
-python-dotenv>=1.0.0
-schedule>=1.2.0
-requests>=2.28.0
-joblib>=1.2.0
-hmmlearn>=0.3.0
-scikit-learn>=1.0.0
-discord.py>=2.0.0
-matplotlib>=3.5.0
-openpyxl>=3.0.0
-backtrader>=1.9.76
-ta>=0.10.0
-tenacity>=8.2.0
+# 데이터 분석 및 차트
+matplotlib
+pandas
+pandas_ta
+ta
+numpy
+scikit-learn
+hmmlearn
+joblib
+
+# 트레이딩 및 거래소
+ccxt
+tenacity
+backtrader
+
+# 웹 서버 (FastAPI)
+fastapi
+uvicorn
+websockets
+
+# 디스코드 및 유틸리티
+discord.py
+python-dotenv
+requests

@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QuantBot Hybrid V2</title>
+    
+    <!-- CDN Libraries -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <style>
+        /* Custom Scrollbar */
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .log-container::-webkit-scrollbar { width: 8px; }
+        .log-container::-webkit-scrollbar-track { background: #1f2937; }
+        .log-container::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 4px; }
+        
+        body { background-color: #111827; color: #e5e7eb; font-family: 'Inter', sans-serif; }
+        
+        /* Tab Styles */
+        .tab-active { border-bottom: 2px solid #3b82f6; color: #3b82f6; background: rgba(59, 130, 246, 0.1); }
+        .tab-inactive { color: #9ca3af; }
+        .tab-inactive:hover { color: #e5e7eb; background: rgba(255, 255, 255, 0.05); }
+        
+        /* Animation */
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-fade-in { animation: fadeIn 0.3s ease-out forwards; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // ------------------------------------------------------------------
+        // [Component] Dashboard Tab
+        // ------------------------------------------------------------------
+        const Dashboard = ({ status, logs, sendCommand, forceClose }) => {
+            const logEndRef = useRef(null);
+            useEffect(() => { logEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [logs]);
+
+            if (!status) return <div className="text-center py-20 animate-pulse">Loading Dashboard Data...</div>;
+
+            return (
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-fade-in">
+                    <div className="lg:col-span-2 space-y-6">
+                        {/* 자산 카드 */}
+                        <div className="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700">
+                            <h2 className="text-lg font-semibold text-gray-300 mb-4 flex items-center gap-2">
+                                <i className="ph ph-wallet text-blue-400"></i> 자산 현황 ({status.mode})
+                            </h2>
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="bg-gray-900 p-5 rounded-lg border border-gray-700/50">
+                                    <p className="text-gray-500 text-sm mb-1">총 자산 (Total)</p>
+                                    <p className="text-2xl font-bold text-white tracking-wide">${status.balance.total.toLocaleString()}</p>
+                                </div>
+                                <div className="bg-gray-900 p-5 rounded-lg border border-gray-700/50">
+                                    <p className="text-gray-500 text-sm mb-1">주문 가능 (Free)</p>
+                                    <p className="text-2xl font-bold text-blue-400 tracking-wide">${status.balance.free.toLocaleString()}</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* 포지션 테이블 */}
+                        <div className="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700">
+                            <h2 className="text-lg font-semibold text-gray-300 mb-4 flex items-center gap-2">
+                                <i className="ph ph-chart-line-up text-green-400"></i> 보유 포지션
+                            </h2>
+                            {status.positions.length === 0 ? (
+                                <div className="text-center py-10 text-gray-500 bg-gray-900/50 rounded-lg border border-dashed border-gray-700">
+                                    현재 보유 중인 포지션이 없습니다.
+                                </div>
+                            ) : (
+                                <div className="overflow-x-auto rounded-lg border border-gray-700">
+                                    <table className="w-full text-left text-sm text-gray-400">
+                                        <thead className="bg-gray-900 uppercase text-xs font-semibold text-gray-300">
+                                            <tr>
+                                                <th className="px-4 py-3">Symbol</th>
+                                                <th className="px-4 py-3">Side</th>
+                                                <th className="px-4 py-3">Entry</th>
+                                                <th className="px-4 py-3">Unrealized PnL</th>
+                                                <th className="px-4 py-3 text-right">Action</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-gray-800">
+                                            {status.positions.map((pos) => (
+                                                <tr key={pos.symbol} className="hover:bg-gray-700/50 transition-colors">
+                                                    <td className="px-4 py-4 font-medium text-white">{pos.symbol}</td>
+                                                    <td className="px-4 py-4">
+                                                        <span className={`px-2.5 py-1 rounded text-xs font-bold ${pos.side === 'buy' ? 'bg-green-900/50 text-green-400 border border-green-800' : 'bg-red-900/50 text-red-400 border border-red-800'}`}>
+                                                            {pos.side.toUpperCase()} x{pos.leverage}
+                                                        </span>
+                                                    </td>
+                                                    <td className="px-4 py-4 font-mono text-gray-300">${pos.entryPrice}</td>
+                                                    <td className={`px-4 py-4 font-bold ${pos.unrealizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                                        {pos.unrealizedPnl > 0 ? '+' : ''}{pos.unrealizedPnl}
+                                                    </td>
+                                                    <td className="px-4 py-4 text-right">
+                                                        <button onClick={() => forceClose(pos.symbol)} className="bg-red-600/20 hover:bg-red-600/40 text-red-400 border border-red-600/50 px-3 py-1.5 rounded text-xs transition">
+                                                            청산
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* 제어 및 로그 */}
+                    <div className="space-y-6">
+                        <div className="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700">
+                            <h2 className="text-lg font-semibold text-gray-300 mb-4">🕹️ 제어 패널</h2>
+                            <div className="space-y-3">
+                                <button onClick={() => sendCommand('set_mode', 'PAPER')} className="w-full py-3 bg-green-600/20 hover:bg-green-600/30 text-green-400 border border-green-600/50 rounded-lg font-bold transition flex justify-center items-center gap-2">
+                                    <i className="ph ph-flask text-xl"></i> 모의매매 시작
+                                </button>
+                                <button onClick={() => sendCommand('set_mode', 'REAL')} className="w-full py-3 bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-600/50 rounded-lg font-bold transition flex justify-center items-center gap-2">
+                                    <i className="ph ph-lightning text-xl"></i> 실전매매 시작
+                                </button>
+                                <button onClick={() => sendCommand('stop', 'OFF')} className="w-full py-3 bg-gray-600/20 hover:bg-gray-600/30 text-gray-400 border border-gray-600/50 rounded-lg font-bold transition flex justify-center items-center gap-2">
+                                    <i className="ph ph-stop-circle text-xl"></i> 시스템 정지
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700 flex flex-col h-[400px]">
+                            <div className="flex justify-between items-center mb-4">
+                                <h2 className="text-lg font-semibold text-gray-300 flex items-center gap-2"><i className="ph ph-terminal-window text-purple-400"></i> 시스템 로그</h2>
+                                <span className="text-xs text-gray-500">Real-time</span>
+                            </div>
+                            <div className="log-container flex-1 overflow-y-auto bg-gray-950 p-4 rounded-lg font-mono text-xs space-y-1.5 border border-gray-900 shadow-inner">
+                                {logs.length === 0 && <p className="text-gray-600 text-center mt-10 italic">로그 대기 중...</p>}
+                                {logs.map((log, i) => (
+                                    <div key={i} className="break-words leading-relaxed hover:bg-gray-900/50 px-1 rounded">
+                                        <span className="text-gray-600 mr-2 select-none">[{log.time}]</span>
+                                        <span className={
+                                            log.msg.includes("ERROR") ? "text-red-400 font-bold" :
+                                            log.msg.includes("WARN") ? "text-yellow-400" :
+                                            log.msg.includes("BACKTEST") ? "text-purple-400" :
+                                            log.msg.includes("SYSTEM") ? "text-blue-300" :
+                                            "text-gray-300"
+                                        }>{log.msg}</span>
+                                    </div>
+                                ))}
+                                <div ref={logEndRef} />
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // ------------------------------------------------------------------
+        // [Component] History Tab
+        // ------------------------------------------------------------------
+        const History = () => {
+            const [mode, setMode] = useState('PAPER');
+            const [data, setData] = useState(null);
+            const chartRef = useRef(null);
+            const chartInstance = useRef(null);
+
+            const fetchHistory = async () => {
+                try {
+                    const res = await axios.get(`/api/history?mode=${mode}`);
+                    setData(res.data);
+                } catch(e) { console.error(e); }
+            };
+
+            useEffect(() => { fetchHistory(); }, [mode]);
+
+            // 차트 그리기
+            useEffect(() => {
+                if (data && data.equity_curve && chartRef.current) {
+                    if (chartInstance.current) chartInstance.current.destroy();
+                    
+                    const ctx = chartRef.current.getContext('2d');
+                    const labels = data.equity_curve.map(d => d.time.substring(5, 16)); 
+                    const values = data.equity_curve.map(d => d.value);
+                    const isPositive = (values[values.length - 1] || 0) >= 0;
+
+                    chartInstance.current = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: labels,
+                            datasets: [{
+                                label: '누적 실현 손익 (USD)',
+                                data: values,
+                                borderColor: isPositive ? '#34d399' : '#f87171', 
+                                backgroundColor: isPositive ? 'rgba(52, 211, 153, 0.1)' : 'rgba(248, 113, 113, 0.1)',
+                                borderWidth: 2,
+                                fill: true,
+                                tension: 0.3,
+                                pointRadius: 2
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: { legend: { display: false } },
+                            scales: {
+                                x: { display: false }, 
+                                y: { grid: { color: '#374151' }, ticks: { color: '#9ca3af' } }
+                            }
+                        }
+                    });
+                }
+            }, [data]);
+
+            return (
+                <div className="space-y-6 animate-fade-in">
+                    <div className="flex justify-between items-center bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-lg">
+                        <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                            <i className="ph ph-chart-bar text-yellow-400"></i> 매매 성과 분석
+                        </h2>
+                        <div className="flex bg-gray-900 rounded-lg p-1 border border-gray-600">
+                            <button onClick={()=>setMode('PAPER')} className={`px-4 py-1.5 rounded-md text-sm font-bold transition ${mode==='PAPER'?'bg-green-600 text-white':'text-gray-400 hover:text-white'}`}>모의투자</button>
+                            <button onClick={()=>setMode('REAL')} className={`px-4 py-1.5 rounded-md text-sm font-bold transition ${mode==='REAL'?'bg-red-600 text-white':'text-gray-400 hover:text-white'}`}>실전투자</button>
+                        </div>
+                    </div>
+
+                    {!data ? (
+                         <div className="text-center py-20"><i className="ph ph-spinner animate-spin text-4xl text-blue-500"></i></div>
+                    ) : (
+                        <>
+                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                                {/* 요약 카드 */}
+                                <div className="space-y-4">
+                                    <div className="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow-lg">
+                                        <p className="text-gray-400 text-sm">누적 실현 손익 (Net PnL)</p>
+                                        <p className={`text-3xl font-bold mt-1 ${data.summary.total_pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                            {data.summary.total_pnl > 0 ? '+' : ''}{data.summary.total_pnl.toLocaleString()} USD
+                                        </p>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-lg">
+                                            <p className="text-gray-400 text-xs">승률 (Win Rate)</p>
+                                            <p className="text-xl font-bold text-blue-400 mt-1">{data.summary.win_rate}%</p>
+                                        </div>
+                                        <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-lg">
+                                            <p className="text-gray-400 text-xs">총 거래 횟수</p>
+                                            <p className="text-xl font-bold text-white mt-1">{data.summary.total_trades}회</p>
+                                        </div>
+                                    </div>
+                                    <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-lg">
+                                        <p className="text-gray-400 text-xs">최고의 거래 (Best)</p>
+                                        <p className="text-xl font-bold text-green-400 mt-1">+${data.summary.best_trade}</p>
+                                    </div>
+                                </div>
+
+                                {/* 수익 곡선 차트 */}
+                                <div className="lg:col-span-2 bg-gray-800 p-5 rounded-xl border border-gray-700 shadow-lg flex flex-col">
+                                    <h3 className="text-sm font-semibold text-gray-400 mb-4">📈 수익 곡선 (Cumulative Equity)</h3>
+                                    <div className="flex-1 relative min-h-[250px]">
+                                        {data.equity_curve.length > 0 ? (
+                                            <canvas ref={chartRef}></canvas>
+                                        ) : (
+                                            <div className="flex items-center justify-center h-full text-gray-600">데이터 부족</div>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* 상세 거래 내역 테이블 */}
+                            <div className="bg-gray-800 rounded-xl border border-gray-700 shadow-lg overflow-hidden">
+                                <div className="p-4 border-b border-gray-700 font-bold text-gray-300">📄 상세 거래 내역 (최신순)</div>
+                                <div className="overflow-x-auto max-h-[500px] overflow-y-auto">
+                                    <table className="w-full text-sm text-left text-gray-400">
+                                        <thead className="text-xs text-gray-400 uppercase bg-gray-900 sticky top-0">
+                                            <tr>
+                                                <th className="px-4 py-3">Time</th>
+                                                <th className="px-4 py-3">Symbol</th>
+                                                <th className="px-4 py-3">Side</th>
+                                                <th className="px-4 py-3 text-right">Price</th>
+                                                <th className="px-4 py-3 text-right">PnL</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-gray-700">
+                                            {data.trades.map((row) => (
+                                                <tr key={row.id} className="hover:bg-gray-700/50">
+                                                    <td className="px-4 py-3 whitespace-nowrap text-xs">{row.timestamp}</td>
+                                                    <td className="px-4 py-3 font-bold text-white">{row.symbol}</td>
+                                                    <td className="px-4 py-3">
+                                                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${row.side==='buy'?'bg-green-900/30 text-green-400 border-green-800':'bg-red-900/30 text-red-400 border-red-800'}`}>
+                                                            {row.side.toUpperCase()}
+                                                        </span>
+                                                    </td>
+                                                    <td className="px-4 py-3 text-right font-mono">
+                                                        <div className="text-xs">In: {row.entry_price}</div>
+                                                        <div className="text-xs">Out: {row.exit_price}</div>
+                                                    </td>
+                                                    <td className={`px-4 py-3 text-right font-bold ${row.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                                        {row.pnl > 0 ? '+' : ''}{row.pnl.toFixed(2)}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                    {data.trades.length === 0 && <div className="p-10 text-center text-gray-600">거래 내역이 없습니다.</div>}
+                                </div>
+                            </div>
+                        </>
+                    )}
+                </div>
+            );
+        };
+
+        // ------------------------------------------------------------------
+        // [Component] Backtest Tab (With Local Persistence)
+        // ------------------------------------------------------------------
+        const Backtest = ({ symbols }) => {
+            // [수정] 초기값을 LocalStorage에서 불러옴
+            const [params, setParams] = useState(() => {
+                const saved = localStorage.getItem('bt_params');
+                if (saved) {
+                    return JSON.parse(saved);
+                }
+                return {
+                    symbol: symbols[0] || "BTC/USDT",
+                    initial_cash: 10000,
+                    train_days: 365,
+                    test_days: 30,
+                    update_data: false
+                };
+            });
+
+            const [loading, setLoading] = useState(false);
+            const [result, setResult] = useState(null);
+            
+            const chartRef = useRef(null);
+            const chartInstance = useRef(null);
+
+            // [추가] params가 변경될 때마다 LocalStorage에 저장
+            useEffect(() => {
+                localStorage.setItem('bt_params', JSON.stringify(params));
+            }, [params]);
+
+            const handleChange = (e) => {
+                const { name, value, type, checked } = e.target;
+                setParams(prev => ({ ...prev, [name]: type === 'checkbox' ? checked : value }));
+            };
+
+            const runAnalysis = async (isBatch) => {
+                if(loading) return;
+                setLoading(true);
+                setResult(null);
+                
+                try {
+                    const payload = {
+                        symbol: params.symbol,
+                        initial_cash: Number(params.initial_cash),
+                        train_days: Number(params.train_days),
+                        test_days: Number(params.test_days),
+                        update_data: params.update_data,
+                        is_batch: isBatch
+                    };
+                    const res = await axios.post('/api/backtest', payload);
+                    setResult({ ...res.data, type: isBatch ? 'batch' : 'single' });
+                } catch (e) {
+                    alert("오류: " + (e.response?.data?.detail || e.message));
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            // 차트 렌더링
+            useEffect(() => {
+                if (result && chartRef.current) {
+                    if (chartInstance.current) chartInstance.current.destroy();
+                    const ctx = chartRef.current.getContext('2d');
+
+                    if (result.type === 'single') {
+                        const labels = result.equity_curve.map(d => d.time);
+                        const data = result.equity_curve.map(d => d.value);
+                        
+                        chartInstance.current = new Chart(ctx, {
+                            type: 'line',
+                            data: {
+                                labels: labels,
+                                datasets: [{
+                                    label: '누적 자산 (USDT)',
+                                    data: data,
+                                    borderColor: '#3b82f6',
+                                    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                                    tension: 0.1,
+                                    fill: true,
+                                    pointRadius: 0,
+                                    pointHoverRadius: 4
+                                }]
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                interaction: { mode: 'index', intersect: false },
+                                scales: {
+                                    x: { grid: { color: '#374151' }, ticks: { color: '#9ca3af' } },
+                                    y: { grid: { color: '#374151' }, ticks: { color: '#9ca3af' } }
+                                },
+                                plugins: { tooltip: { mode: 'index', intersect: false } }
+                            }
+                        });
+                    } else {
+                        const labels = result.details.map(r => r.symbol);
+                        const data = result.details.map(r => r.roi);
+                        const bgColors = data.map(v => v >= 0 ? 'rgba(34, 197, 94, 0.6)' : 'rgba(239, 68, 68, 0.6)');
+                        const borderColors = data.map(v => v >= 0 ? '#16a34a' : '#dc2626');
+
+                        chartInstance.current = new Chart(ctx, {
+                            type: 'bar',
+                            data: {
+                                labels: labels,
+                                datasets: [{
+                                    label: '수익률 (ROI %)',
+                                    data: data,
+                                    backgroundColor: bgColors,
+                                    borderColor: borderColors,
+                                    borderWidth: 1
+                                }]
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                scales: {
+                                    x: { grid: { color: '#374151' }, ticks: { color: '#9ca3af' } },
+                                    y: { grid: { color: '#374151' }, ticks: { color: '#9ca3af' } }
+                                }
+                            }
+                        });
+                    }
+                }
+            }, [result]);
+
+            return (
+                <div className="space-y-6 animate-fade-in">
+                    {/* 옵션 패널 */}
+                    <div className="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700">
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
+                            <div>
+                                <label className="block text-sm text-gray-400 mb-2">테스트 코인</label>
+                                <select name="symbol" className="w-full bg-gray-900 text-white p-2.5 rounded-lg border border-gray-600 focus:border-blue-500 outline-none" 
+                                        value={params.symbol} onChange={handleChange}>
+                                    {symbols.map(s => <option key={s} value={s}>{s}</option>)}
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-sm text-gray-400 mb-2">초기 자본금 ($)</label>
+                                <input type="number" name="initial_cash" className="w-full bg-gray-900 text-white p-2.5 rounded-lg border border-gray-600 focus:border-blue-500 outline-none"
+                                       value={params.initial_cash} onChange={handleChange} />
+                            </div>
+                            <div>
+                                <label className="block text-sm text-gray-400 mb-2">학습 기간 (일)</label>
+                                <input type="number" name="train_days" className="w-full bg-gray-900 text-white p-2.5 rounded-lg border border-gray-600 focus:border-blue-500 outline-none"
+                                       value={params.train_days} onChange={handleChange} />
+                            </div>
+                            <div>
+                                <label className="block text-sm text-gray-400 mb-2">검증 기간 (일)</label>
+                                <input type="number" name="test_days" className="w-full bg-gray-900 text-white p-2.5 rounded-lg border border-gray-600 focus:border-blue-500 outline-none"
+                                       value={params.test_days} onChange={handleChange} />
+                            </div>
+                        </div>
+                        
+                        <div className="flex flex-wrap justify-between items-center gap-4 border-t border-gray-700 pt-4">
+                            <label className="flex items-center gap-2 text-gray-300 cursor-pointer hover:text-white">
+                                <input type="checkbox" name="update_data" checked={params.update_data} onChange={handleChange} className="w-4 h-4 rounded bg-gray-900 border-gray-600 accent-blue-500" />
+                                <span>실행 전 데이터 최신화 (시간 소요됨)</span>
+                            </label>
+                            
+                            <div className="flex gap-3">
+                                <button onClick={() => runAnalysis(false)} disabled={loading} 
+                                    className={`px-6 py-2.5 rounded-lg font-bold text-white transition flex items-center gap-2 shadow-lg ${loading ? 'bg-gray-700 cursor-not-allowed text-gray-400' : 'bg-blue-600 hover:bg-blue-500'}`}>
+                                    {loading ? <i className="ph ph-spinner animate-spin"></i> : <i className="ph ph-play-circle"></i>}
+                                    단일 실행
+                                </button>
+                                <button onClick={() => runAnalysis(true)} disabled={loading} 
+                                    className={`px-6 py-2.5 rounded-lg font-bold text-white transition flex items-center gap-2 shadow-lg ${loading ? 'bg-gray-700 cursor-not-allowed text-gray-400' : 'bg-purple-600 hover:bg-purple-500'}`}>
+                                    {loading ? <i className="ph ph-spinner animate-spin"></i> : <i className="ph ph-playlist"></i>}
+                                    전체 포트폴리오 실행
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* 결과 영역 */}
+                    {result && (
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-fade-in">
+                            {/* 차트 섹션 */}
+                            <div className="lg:col-span-2 bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700 flex flex-col">
+                                <h3 className="text-lg font-semibold text-gray-300 mb-4 flex items-center gap-2">
+                                    <i className="ph ph-trend-up text-blue-400"></i> {result.type === 'single' ? '수익 곡선 (Equity Curve)' : '코인별 수익률 (ROI)'}
+                                </h3>
+                                <div className="relative flex-1 min-h-[300px]">
+                                    <canvas ref={chartRef}></canvas>
+                                </div>
+                            </div>
+
+                            {/* 요약 및 테이블 섹션 */}
+                            <div className="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700 flex flex-col h-[600px]">
+                                <h3 className="text-lg font-semibold text-gray-300 mb-4 flex items-center gap-2">
+                                    <i className="ph ph-notebook text-yellow-400"></i> 결과 리포트
+                                </h3>
+                                
+                                {/* 요약 카드 */}
+                                <div className="bg-gray-900 rounded-lg p-4 mb-4 border border-gray-700 space-y-3 shadow-inner">
+                                    {result.type === 'single' ? (
+                                        <>
+                                            <div className="flex justify-between items-center border-b border-gray-800 pb-2">
+                                                <span className="text-gray-400 text-sm">심볼</span>
+                                                <span className="font-bold text-white">{result.symbol}</span>
+                                            </div>
+                                            <div className="flex justify-between items-center border-b border-gray-800 pb-2">
+                                                <span className="text-gray-400 text-sm">최종 잔고</span>
+                                                <span className="font-bold text-white tracking-wide">${result.final_balance.toLocaleString()}</span>
+                                            </div>
+                                            <div className="flex justify-between items-center border-b border-gray-800 pb-2">
+                                                <span className="text-gray-400 text-sm">수익률 (ROI)</span>
+                                                <span className={`font-bold ${result.roi >= 0 ? 'text-green-400' : 'text-red-400'}`}>{result.roi > 0 ? '+' : ''}{result.roi}%</span>
+                                            </div>
+                                            <div className="flex justify-between items-center">
+                                                <span className="text-gray-400 text-sm">총 거래</span>
+                                                <span className="font-bold text-white">{result.trade_count}회</span>
+                                            </div>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <div className="flex justify-between items-center border-b border-gray-800 pb-2">
+                                                <span className="text-gray-400 text-sm">평균 수익률</span>
+                                                <span className={`font-bold ${result.avg_roi >= 0 ? 'text-green-400' : 'text-red-400'}`}>{result.avg_roi > 0 ? '+' : ''}{result.avg_roi}%</span>
+                                            </div>
+                                            <div className="flex justify-between items-center border-b border-gray-800 pb-2">
+                                                <span className="text-gray-400 text-sm">포트폴리오 ROI</span>
+                                                <span className={`font-bold ${result.portfolio_roi >= 0 ? 'text-green-400' : 'text-red-400'}`}>{result.portfolio_roi > 0 ? '+' : ''}{result.portfolio_roi}%</span>
+                                            </div>
+                                            <div className="flex justify-between items-center">
+                                                <span className="text-gray-400 text-sm">테스트 코인</span>
+                                                <span className="font-bold text-white">{result.details.length}개</span>
+                                            </div>
+                                        </>
+                                    )}
+                                </div>
+
+                                {/* 상세 테이블 */}
+                                <div className="flex-1 overflow-auto bg-gray-900 rounded-lg border border-gray-700 scrollbar-hide relative">
+                                    <table className="w-full text-xs text-gray-400">
+                                        <thead className="bg-gray-800 sticky top-0 text-gray-300 font-semibold z-10 shadow-md">
+                                            <tr>
+                                                {result.type === 'single' ? (
+                                                    <>
+                                                        <th className="p-3 text-left">Side</th>
+                                                        <th className="p-3 text-left">Time (In/Out)</th>
+                                                        <th className="p-3 text-left">Price (In/Out)</th>
+                                                        <th className="p-3 text-left">Size</th>
+                                                        <th className="p-3 text-left">PnL (ROI)</th>
+                                                        <th className="p-3 text-right">Dur.</th>
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <th className="p-3 text-left">Symbol</th>
+                                                        <th className="p-3 text-right">Balance</th>
+                                                        <th className="p-3 text-right">ROI</th>
+                                                    </>
+                                                )}
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-gray-800">
+                                            {result.type === 'single' ? 
+                                                result.trades.map((t, i) => (
+                                                    <tr key={i} className="hover:bg-gray-800/50 transition-colors">
+                                                        <td className="p-3 align-top">
+                                                            <span className={`px-2 py-1 rounded-md font-bold text-[10px] border tracking-wider ${
+                                                                t.Type === 'Long' 
+                                                                ? 'bg-green-900/30 text-green-400 border-green-800' 
+                                                                : 'bg-red-900/30 text-red-400 border-red-800'
+                                                            }`}>
+                                                                {t.Type.toUpperCase()}
+                                                            </span>
+                                                        </td>
+                                                        <td className="p-3 whitespace-nowrap align-top">
+                                                            <div className="text-gray-300 font-medium">{t.Entry_Date}</div>
+                                                            <div className="text-gray-500 text-[10px] flex items-center gap-1">
+                                                                <i className="ph-bold ph-arrow-elbow-down-right"></i> {t.Exit_Date}
+                                                            </div>
+                                                        </td>
+                                                        <td className="p-3 whitespace-nowrap align-top">
+                                                            <div className="text-gray-300">${t.Entry_Price.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</div>
+                                                            <div className="text-gray-500 text-[10px] flex items-center gap-1">
+                                                                <i className="ph-bold ph-arrow-elbow-down-right"></i> ${t.Exit_Price.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
+                                                            </div>
+                                                        </td>
+                                                        <td className="p-3 align-top font-mono text-gray-400">{Number(t.Size).toFixed(6)}</td>
+                                                        <td className="p-3 whitespace-nowrap align-top">
+                                                            <div className={`font-bold text-sm ${t.PnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                                                {t.PnL >= 0 ? '+' : ''}${t.PnL.toFixed(2)}
+                                                            </div>
+                                                            <div className={`text-[10px] font-medium ${t.ROI >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                                                ({t.ROI.toFixed(2)}%)
+                                                            </div>
+                                                        </td>
+                                                        <td className="p-3 text-right align-top text-gray-500">
+                                                            {t.Duration}
+                                                        </td>
+                                                    </tr>
+                                                )) : 
+                                                result.details.map((r, i) => (
+                                                    <tr key={i} className="hover:bg-gray-800/50 transition-colors">
+                                                        <td className="p-3 font-medium text-white">{r.symbol}</td>
+                                                        <td className="p-3 text-right font-mono text-gray-300">${r.final_balance.toLocaleString()}</td>
+                                                        <td className={`p-3 text-right font-bold ${r.roi >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                                            {r.roi > 0 ? '+' : ''}{r.roi}%
+                                                        </td>
+                                                    </tr>
+                                                ))
+                                            }
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        // ------------------------------------------------------------------
+        // [Component] Settings Tab (수정됨)
+        // ------------------------------------------------------------------
+        const Settings = ({ config, status }) => {
+            const [balance, setBalance] = useState(10000);
+            const [loading, setLoading] = useState(false);
+            const [isInitialized, setIsInitialized] = useState(false);
+
+            // [수정] 모드(mode) 확인 조건을 제거하고, paper_balance가 있으면 무조건 반영
+            useEffect(() => {
+                // 1. 아직 초기화 안 됐고
+                // 2. 서버 상태(status)가 도착했고
+                // 3. 서버가 보내준 모의투자 잔고(paper_balance)가 있다면
+                if (!isInitialized && status && status.paper_balance !== undefined) {
+                    setBalance(status.paper_balance);
+                    setIsInitialized(true);
+                }
+            }, [status, isInitialized]); // status가 변경될 때마다 체크
+
+            const handleReset = async () => {
+                if (!confirm(`모의투자 잔고를 $${Number(balance).toLocaleString()}로 초기화하시겠습니까?\n이 작업은 되돌릴 수 없습니다.`)) return;
+                setLoading(true);
+                try {
+                    const res = await axios.post('/api/reset_balance', { amount: Number(balance) });
+                    alert("초기화 완료!");
+                    // 초기화 후에는 다시 서버 데이터와 동기화되도록 플래그 리셋 (선택사항)
+                    setIsInitialized(false); 
+                } catch(e) { alert("오류 발생: " + e.message); }
+                finally { setLoading(false); }
+            };
+
+            return (
+                <div className="space-y-6 animate-fade-in">
+                    <div className="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700">
+                        <h2 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
+                            <i className="ph ph-gear text-gray-400"></i> 시스템 설정
+                        </h2>
+                        
+                        <div className="mb-8">
+                            <h3 className="text-lg font-semibold text-blue-400 mb-3 border-b border-gray-700 pb-2">모의투자 관리</h3>
+                            <div className="bg-gray-900/50 p-4 rounded-lg border border-gray-700 flex flex-col md:flex-row gap-4 items-end">
+                                <div className="flex-1 w-full">
+                                    <label className="block text-sm text-gray-400 mb-2">초기 자본금 설정 ($)</label>
+                                    <input type="number" className="w-full bg-gray-800 text-white p-3 rounded border border-gray-600 focus:border-blue-500 outline-none" 
+                                           value={balance} onChange={(e)=>setBalance(e.target.value)} />
+                                </div>
+                                <button onClick={handleReset} disabled={loading} 
+                                        className={`px-6 py-3 rounded font-bold text-white transition w-full md:w-auto whitespace-nowrap ${loading?'bg-gray-600':'bg-red-600 hover:bg-red-700'}`}>
+                                    <i className="ph ph-arrow-counter-clockwise"></i> 잔고 초기화 (Reset)
+                                </button>
+                            </div>
+                            <p className="text-xs text-gray-500 mt-2">* 현재 모의투자(PAPER) 모드의 잔고를 강제로 변경합니다.</p>
+                        </div>
+
+                        <div>
+                            <h3 className="text-lg font-semibold text-purple-400 mb-3 border-b border-gray-700 pb-2">현재 전략 구성 (Read Only)</h3>
+                            <div className="bg-gray-900 p-4 rounded-lg border border-gray-700 overflow-x-auto">
+                                <pre className="text-xs text-green-400 font-mono">{JSON.stringify(config, null, 2)}</pre>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // ------------------------------------------------------------------
+        // [Main App]
+        // ------------------------------------------------------------------
+        function App() {
+            const [status, setStatus] = useState(null);
+            const [logs, setLogs] = useState([]);
+            const [wsConnected, setWsConnected] = useState(false);
+            const [activeTab, setActiveTab] = useState("dashboard");
+            const [config, setConfig] = useState({});
+
+            const fetchStatus = async () => { try { const res = await axios.get('/api/status'); setStatus(res.data); } catch(e){} };
+            const fetchConfig = async () => { try { const res = await axios.get('/api/config'); setConfig(res.data); } catch(e){} };
+
+            useEffect(() => { fetchStatus(); fetchConfig(); const i = setInterval(fetchStatus, 2000); return () => clearInterval(i); }, []);
+
+            useEffect(() => {
+                const wsUrl = `${window.location.protocol==='https:'?'wss:':'ws:'}//${window.location.host}/ws/logs`;
+                let ws = new WebSocket(wsUrl);
+                ws.onopen = () => { setWsConnected(true); };
+                ws.onmessage = (e) => {
+                    if (e.data.startsWith("{")) { try{ setStatus(p=>({...p, ...JSON.parse(e.data)})); }catch(e){} } 
+                    else { setLogs(p=>[...p.slice(-99), {time: new Date().toLocaleTimeString(), msg: e.data.replace(/\[.*?\]/g,'').trim()}]); }
+                };
+                return () => ws.close();
+            }, []);
+
+            const sendCommand = async (cmd, val) => {
+                if(!confirm(`'${cmd}' 명령을 실행하시겠습니까?`)) return;
+                try{ await axios.post('/api/control', {command:cmd, value:val}); alert("완료"); fetchStatus(); }catch(e){alert("실패");}
+            };
+            const forceClose = async (sym) => {
+                if(!confirm("청산하시겠습니까?")) return;
+                try{ await axios.post(`/api/trade/close/${encodeURIComponent(sym)}`); alert("완료"); }catch(e){alert("실패");}
+            };
+
+            if (!status) return <div className="flex h-screen items-center justify-center bg-gray-900 text-white flex-col gap-4"><div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>Loading System...</div>;
+
+            return (
+                <div className="max-w-7xl mx-auto p-4 pb-20 font-sans">
+                    <header className="flex flex-col md:flex-row justify-between items-center bg-gray-800 p-5 rounded-xl shadow-xl border border-gray-700 gap-4 mb-6">
+                        <div className="flex items-center gap-5 w-full md:w-auto">
+                            <div className="p-3 bg-blue-600 rounded-lg shadow-lg"><i className="ph-fill ph-robot text-3xl text-white"></i></div>
+                            <div><h1 className="text-2xl font-bold text-white">QuantBot Hybrid V2</h1><div className="flex gap-4 text-xs text-gray-400 mt-1"><span className={wsConnected?'text-green-400':'text-red-400'}>● Server</span><span className={status.discord_active?'text-blue-400':'text-gray-500'}>● Discord</span></div></div>
+                        </div>
+                        <div className={`px-6 py-2 rounded-full font-bold text-sm border tracking-wider ${status.mode==='REAL'?'bg-red-500/10 text-red-400 border-red-500':'bg-green-500/10 text-green-400 border-green-500'}`}>{status.mode} MODE</div>
+                    </header>
+
+                    <div className="flex border-b border-gray-700 mb-6 overflow-x-auto">
+                        {['dashboard', 'history', 'backtest', 'settings'].map(tab => (
+                            <button key={tab} onClick={()=>setActiveTab(tab)} 
+                                className={`px-6 py-3 font-medium text-sm capitalize transition-all whitespace-nowrap ${activeTab===tab?'tab-active':'tab-inactive'}`}>
+                                {tab}
+                            </button>
+                        ))}
+                    </div>
+
+                    <div className="min-h-[600px]">
+                        {activeTab === 'dashboard' && <Dashboard status={status} logs={logs} sendCommand={sendCommand} forceClose={forceClose} />}
+                        {activeTab === 'history' && <History />}
+                        {activeTab === 'backtest' && <Backtest symbols={config.SYMBOLS || []} />}
+                        
+                        {/* [수정] status 전달 */}
+                        {activeTab === 'settings' && <Settings config={config} status={status} />}
+                    </div>
+                </div>
+            );
+        }
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
