@@ -64,8 +64,8 @@ class MultiSymbolLoader:
         
         print(f"\n✅ 수집 완료: 총 {len(all_candles)}개 캔들")
         
-        # DataFrame 변환
-        df = pd.DataFrame(all_candles, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
+        # DataFrame 변환 [수정됨: 컬럼명을 소문자로 통일하여 KeyError 방지]
+        df = pd.DataFrame(all_candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df.set_index('timestamp', inplace=True)
         
@@ -76,18 +76,20 @@ class MultiSymbolLoader:
 
     def add_features(self, df):
         """기술적 지표 및 피처 생성"""
+        # [수정됨: 소문자 컬럼명 사용]
+        
         # 1. 로그 수익률
-        df['Log_Returns'] = np.log(df['Close'] / df['Close'].shift(1))
+        df['Log_Returns'] = np.log(df['close'] / df['close'].shift(1))
         
         # 2. 범위 변동성 (Range Volatility)
-        df['Range_Vol'] = (df['High'] - df['Low']) / df['Close']
+        df['Range_Vol'] = (df['high'] - df['low']) / df['close']
         
         # 3. RSI
-        rsi = RSIIndicator(close=df['Close'], window=14)
+        rsi = RSIIndicator(close=df['close'], window=14)
         df['RSI'] = rsi.rsi()
         
         # 4. 거래량 변화율
-        df['Volume_Change'] = df['Volume'].pct_change()
+        df['Volume_Change'] = df['volume'].pct_change()
 
         # 결측치 제거
         df.dropna(inplace=True)

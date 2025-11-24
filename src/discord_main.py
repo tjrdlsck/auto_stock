@@ -78,7 +78,6 @@ def is_admin(ctx):
 # ---------------------------------------------------------
 @tasks.loop(minutes=1)
 async def heartbeat_loop():
-    # [수정] bot.loop 대신 asyncio.get_running_loop() 사용
     try: 
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, requests.get, HEARTBEAT_URL)
@@ -112,7 +111,6 @@ async def auto_retraining_loop():
     if not bot.trader: return
     await bot.hub.log("🔄 [시스템] AI 모델 재학습 시작", level="SYSTEM")
     try:
-        # [수정] bot.loop 대신 asyncio.get_running_loop() 사용
         loop = asyncio.get_running_loop()
         
         loader = MultiSymbolLoader()
@@ -136,9 +134,16 @@ async def before_retraining():
 @bot.event
 async def on_ready():
     print(f'🤖 디스코드 봇 로그인: {bot.user}')
+    
+    # 기존 루프 시작
     if not hourly_trade_loop.is_running(): hourly_trade_loop.start()
     if not auto_retraining_loop.is_running(): auto_retraining_loop.start()
     if not heartbeat_loop.is_running(): heartbeat_loop.start()
+
+    # [NEW] 펀딩비 동기화 루프 실행 (Trader 내부에 while True로 구현됨)
+    # 별도의 Task로 실행하여 메인 루프 차단 방지
+    if bot.trader:
+        bot.loop.create_task(bot.trader.sync_funding_fee_loop())
 
 @bot.command(name="상태", aliases=["status"])
 async def status(ctx):
@@ -204,7 +209,6 @@ async def cmd_backtest(ctx, symbol: str = "BTC/USDT", test_days: int = 30, train
     is_backtesting = True
     await ctx.send(f"📥 **{symbol}** 데이터 업데이트 및 백테스팅 시작...\n(검증: {test_days}일, 학습: {train_days}일, 시드: ${initial_cash:,.0f})")
 
-    # 로그 콜백 (웹소켓 브로드캐스트)
     def log_callback(msg):
         if bot.hub:
             asyncio.run_coroutine_threadsafe(
@@ -213,7 +217,6 @@ async def cmd_backtest(ctx, symbol: str = "BTC/USDT", test_days: int = 30, train
             )
 
     try:
-        # [수정] bot.loop 대신 asyncio.get_running_loop() 사용
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None, 
@@ -225,7 +228,6 @@ async def cmd_backtest(ctx, symbol: str = "BTC/USDT", test_days: int = 30, train
         if "error" in result:
             await ctx.send(f"❌ 백테스팅 실패: {result['error']}")
         else:
-            # 결과 요약 메시지
             summary = (
                 f"📊 **{symbol} 백테스트 결과**\n"
                 f"━━━━━━━━━━━━━━━━\n"
@@ -234,7 +236,6 @@ async def cmd_backtest(ctx, symbol: str = "BTC/USDT", test_days: int = 30, train
                 f"📉 총 거래 횟수: {result['trade_count']}회"
             )
             
-            # 거래 내역 CSV 생성 (메모리 상에서 처리)
             df = pd.DataFrame(result['trades'])
             if not df.empty:
                 csv_buffer = io.StringIO()
@@ -270,7 +271,6 @@ async def cmd_batch_backtest(ctx, test_days: int = 30, train_days: int = 365, in
             )
 
     try:
-        # [수정] bot.loop 대신 asyncio.get_running_loop() 사용
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None, 
@@ -282,7 +282,6 @@ async def cmd_batch_backtest(ctx, test_days: int = 30, train_days: int = 365, in
         if "error" in result:
             await ctx.send(f"❌ 실행 실패: {result['error']}")
         else:
-            # 종합 리포트 작성
             msg = [f"🏆 **포트폴리오 종합 결과** (ROI: {result['portfolio_roi']:+.2f}%)", "━━━━━━━━━━━━━━━━"]
             for res in result['details']:
                 icon = "🟢" if res['roi'] >= 0 else "🔴"
@@ -290,7 +289,6 @@ async def cmd_batch_backtest(ctx, test_days: int = 30, train_days: int = 365, in
             
             msg.append(f"\n🔎 평균 수익률: **{result['avg_roi']:+.2f}%**")
             
-            # 메시지 길이가 길 경우 분할 전송
             full_text = "\n".join(msg)
             if len(full_text) > 1900:
                 await ctx.send(f"🏆 **종합 ROI**: {result['portfolio_roi']:+.2f}%\n🔎 **평균 ROI**: {result['avg_roi']:+.2f}%")
@@ -317,6 +315,11 @@ async def start_discord_bot(shared_trader, shared_hub):
         # 봇 로그인 없이 루프만 수동 실행
         if not hourly_trade_loop.is_running(): hourly_trade_loop.start()
         if not auto_retraining_loop.is_running(): auto_retraining_loop.start()
+        
+        # [NEW] 디스코드 비활성 상태에서도 펀딩비 동기화 루프는 실행해야 함
+        if shared_trader:
+            asyncio.create_task(shared_trader.sync_funding_fee_loop())
+            
         return
 
     shared_hub.register_discord_bot(bot)

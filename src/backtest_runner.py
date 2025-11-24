@@ -1,5 +1,6 @@
 import sys
 import os
+import shutil
 import backtrader as bt
 import pandas as pd
 from datetime import datetime, timedelta
@@ -16,7 +17,16 @@ from data_layer.data_handler import MultiSymbolLoader
 # --------------------------------------------------------- 
 class HMMData(bt.feeds.PandasData):
     lines = ('regime',)
-    params = (('regime', -1),)
+    params = (
+        ('regime', 'Regime'),
+        ('datetime', None),
+        ('open', 'open'),
+        ('high', 'high'),
+        ('low', 'low'),
+        ('close', 'close'),
+        ('volume', 'volume'),
+        ('openinterest', -1),
+    )
 
 class FuturesComm(bt.CommInfoBase):
     params = (
@@ -37,11 +47,15 @@ class HMM_Pro_Strategy_V5(bt.Strategy):
     params = (
         ('bull_id', None), ('bear_id', None),
         ('leverage', 2.0),
+        ('max_positions', 3),
         ('atr_period', 14), ('rsi_period', 14), ('ema_period', 20),
         ('rsi_buy_upper', 65), ('rsi_buy_lower', 30),
         ('rsi_sell_lower', 35), ('rsi_sell_upper', 70),
         ('stop_atr', 2.0), ('trail_trigger', 2.0), ('trail_dist', 2.0),
-        ('cooldown_bars', 2)
+        ('cooldown_bars', 2),
+        ('output_dir', None),
+        # [NEW] 펀딩비 설정 (기본 0.01%)
+        ('funding_rate', 0.0001) 
     )
     def __init__(self):
         self.regime = self.data.regime
@@ -54,18 +68,17 @@ class HMM_Pro_Strategy_V5(bt.Strategy):
         self.stop_price = 0.0
         self.cooldown = 0
         
-        # [FIX] 가격과 수량을 정확히 추적하기 위한 변수
         self.last_exit_price = 0.0
         self.last_size = 0.0 
         
         self.trade_log = []
+        self.daily_stats = []
+        self.csv_path = ""
 
     def notify_order(self, order):
         if order.status in [order.Completed]:
             executed_price = order.executed.price
-            executed_size = abs(order.executed.size) # [FIX] 체결 수량 저장
-            
-            # 주문 체결 시 수량 업데이트 (진입/청산 모두 기록되지만, 청산 시 값이 최종 사용됨)
+            executed_size = abs(order.executed.size)
             self.last_size = executed_size
 
             if order.isbuy():
@@ -74,7 +87,6 @@ class HMM_Pro_Strategy_V5(bt.Strategy):
                     self.stop_price = self.entry_price - (self.atr[0] * self.p.stop_atr)
                 else: # Short Exit
                     self.last_exit_price = executed_price
-                    
             elif order.issell():
                 if self.position.size < 0: # Short Entry
                     self.entry_price = executed_price
@@ -84,29 +96,16 @@ class HMM_Pro_Strategy_V5(bt.Strategy):
             
             self.order = None
             self.cooldown = 0
-            
         elif order.status in [order.Canceled, order.Margin, order.Rejected]:
             self.order = None
 
     def notify_trade(self, trade):
         if not trade.isclosed: return
-        
         pnl_net = trade.pnlcomm
         pnl_gross = trade.pnl
-        
-        # [FIX] trade.size 대신 notify_order에서 캡처한 정확한 size 사용
         real_size = self.last_size if self.last_size > 0 else abs(trade.size)
-        
-        # 진입 가치 계산
         entry_val = real_size * trade.price
-        
-        # 수익률 계산 (0 나누기 방지)
-        if entry_val > 0:
-            pnl_pct = (pnl_net / entry_val) * 100
-        else:
-            pnl_pct = 0.0
-        
-        # 청산 가격 결정
+        pnl_pct = (pnl_net / entry_val) * 100 if entry_val > 0 else 0.0
         final_exit_price = self.last_exit_price if self.last_exit_price > 0 else (trade.price + (pnl_gross/real_size if real_size > 0 else 0))
 
         self.trade_log.append({
@@ -116,13 +115,42 @@ class HMM_Pro_Strategy_V5(bt.Strategy):
             'Exit_Date': bt.num2date(trade.dtclose).strftime('%Y-%m-%d %H:%M'),
             'Entry_Price': trade.price,
             'Exit_Price': final_exit_price,
-            'Size': real_size, # 정확한 수량 저장
+            'Size': real_size,
             'PnL': pnl_net,
             'ROI': pnl_pct,
             'Duration': trade.barlen
         })
 
     def next(self):
+        # 1. 일별 통계 기록
+        self.daily_stats.append({
+            'Date': self.data.datetime.datetime(0),
+            'Open': self.data.open[0],
+            'High': self.data.high[0],
+            'Low': self.data.low[0],
+            'Close': self.data.close[0],
+            'RSI': self.rsi[0],
+            'ATR': self.atr[0],
+            'Regime': int(self.regime[0]),
+            'Position_Size': self.position.size,
+            'Portfolio_Value': self.broker.getvalue()
+        })
+        
+        # [NEW] 2. 펀딩비 시뮬레이션 (8시간 주기)
+        # 1시간봉 기준이므로 00, 08, 16시 정각에 차감
+        dt = self.data.datetime.datetime(0)
+        if dt.minute == 0 and dt.hour in [0, 8, 16]:
+            if self.position.size != 0:
+                # 포지션 가치 (Notional Value)
+                pos_value = abs(self.position.size) * self.data.close[0]
+                # 펀딩비 계산 (0.01% 가정)
+                funding_cost = pos_value * self.p.funding_rate
+                
+                # 브로커 현금에서 직접 차감 (비용 처리)
+                # add_cash는 백테스터의 가상 현금을 조절함
+                self.broker.add_cash(-funding_cost)
+
+        # 3. 매매 로직
         if self.order: return
         close = self.data.close[0]
         regime = int(self.regime[0])
@@ -148,10 +176,13 @@ class HMM_Pro_Strategy_V5(bt.Strategy):
         elif self.position.size == 0 and self.cooldown == 0:
             cash = self.broker.get_cash()
             if cash <= 0: return
-            target_value = cash * 0.95 * self.p.leverage
+            
+            total_equity = self.broker.getvalue()
+            allocation = total_equity / self.p.max_positions
+            target_value = allocation * 0.95 * self.p.leverage
             size = target_value / close
             
-            if size < 0.000001: return # 최소 수량 제한
+            if size < 0.000001: return 
 
             if regime == self.p.bull_id:
                 if close > ema and self.p.rsi_buy_lower < rsi < self.p.rsi_buy_upper:
@@ -160,20 +191,41 @@ class HMM_Pro_Strategy_V5(bt.Strategy):
                 if close < ema and self.p.rsi_sell_lower < rsi < self.p.rsi_sell_upper:
                     self.order = self.sell(size=size)
 
+    def stop(self):
+        if self.daily_stats:
+            df_stats = pd.DataFrame(self.daily_stats)
+            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+            clean_sym = self.data._name.replace('/', '')
+            filename = f"BT_{ts}_{clean_sym}.csv"
+            
+            if self.p.output_dir:
+                save_dir = self.p.output_dir
+            else:
+                save_dir = os.path.join(DATA_DIR, 'backtests')
+            
+            if not os.path.exists(save_dir):
+                os.makedirs(save_dir, exist_ok=True)
+                
+            full_path = os.path.join(save_dir, filename)
+            df_stats.to_csv(full_path, index=False)
+            self.csv_path = full_path
+
 # --------------------------------------------------------- 
 # 4. 실행 함수 (WFA Logic)
 # --------------------------------------------------------- 
-def run_walk_forward(symbol, initial_cash=10000.0, train_days=365, test_days=30, update_data=False, log_func=None):
+def run_walk_forward(symbol, initial_cash=10000.0, train_days=365, test_days=30, update_data=False, log_func=None, dynamic_config=None, output_dir=None):
     def log(msg):
         if log_func: log_func(msg)
         else: print(msg)
+
+    cfg = dynamic_config if dynamic_config else CONFIG
 
     if update_data:
         log(f"📥 [{symbol}] 최신 데이터 다운로드 및 갱신 중...")
         try:
             loader = MultiSymbolLoader()
             required_days = train_days + test_days + 100
-            fetch_days = max(CONFIG['FETCH_DAYS'], required_days)
+            fetch_days = max(cfg.get('FETCH_DAYS', 1500), required_days)
             df, path = loader.fetch_ohlcv(symbol, days=fetch_days)
             if not df.empty:
                 df = loader.add_features(df)
@@ -211,6 +263,8 @@ def run_walk_forward(symbol, initial_cash=10000.0, train_days=365, test_days=30,
     
     all_trade_logs = []
     equity_curve = []
+    mdd = 0.0
+    csv_path = ""
 
     try:
         model, df_train_res = brain.train_model(df_train, symbol)
@@ -226,17 +280,36 @@ def run_walk_forward(symbol, initial_cash=10000.0, train_days=365, test_days=30,
         data_feed = HMMData(dataname=df_test, name=symbol)
         cerebro.adddata(data_feed)
         
+        base_leverage = float(cfg.get('LEVERAGE', 2.0))
+        max_pos = int(cfg.get('MAX_OPEN_POSITIONS', 3))
         is_btc = 'BTC' in symbol
-        lev = 2.0 if is_btc else 1.0
-        
+        lev = base_leverage if is_btc else 1.0 
+
         cerebro.addstrategy(HMM_Pro_Strategy_V5,
-                            bull_id=bull_id, bear_id=bear_id, leverage=lev)
+                            bull_id=bull_id, 
+                            bear_id=bear_id, 
+                            leverage=lev,
+                            max_positions=max_pos, 
+                            rsi_buy_upper=float(cfg.get('RSI_BUY_UPPER', 65)),
+                            rsi_buy_lower=float(cfg.get('RSI_BUY_LOWER', 30)),
+                            rsi_sell_lower=float(cfg.get('RSI_SELL_LOWER', 35)),
+                            rsi_sell_upper=float(cfg.get('RSI_SELL_UPPER', 70)),
+                            stop_atr=float(cfg.get('STOP_LOSS_ATR', 2.0)),
+                            trail_trigger=float(cfg.get('TRAIL_TRIGGER_ATR', 2.0)),
+                            trail_dist=float(cfg.get('TRAIL_DIST_ATR', 2.0)),
+                            cooldown_bars=2,
+                            output_dir=output_dir 
+                            )
         
         cerebro.broker.setcash(current_cash)
         cerebro.broker.addcommissioninfo(FuturesComm(
-            commission=CONFIG['COMMISSION'], leverage=lev, slippage_perc=CONFIG['SLIPPAGE_PCT']
+            commission=float(cfg.get('COMMISSION', 0.0005)), 
+            leverage=lev, 
+            slippage_perc=float(cfg.get('SLIPPAGE_PCT', 0.0002))
         ))
+        
         cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name='trades')
+        cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
         
         log(f"🚀 [{symbol}] 시뮬레이션 실행 (기간: {test_days}일)...")
         results = cerebro.run()
@@ -245,6 +318,9 @@ def run_walk_forward(symbol, initial_cash=10000.0, train_days=365, test_days=30,
         
         if strat.trade_log:
             all_trade_logs = strat.trade_log
+            
+        mdd = strat.analyzers.drawdown.get_analysis()['max']['drawdown']
+        csv_path = strat.csv_path
 
     except Exception as e:
         log(f"❌ 시뮬레이션 에러: {e}")
@@ -252,10 +328,13 @@ def run_walk_forward(symbol, initial_cash=10000.0, train_days=365, test_days=30,
 
     total_roi = (current_cash - initial_cash) / initial_cash * 100
     
-    running_pnl = 0
+    win_trades = [t for t in all_trade_logs if t['PnL'] > 0]
+    win_rate = (len(win_trades) / len(all_trade_logs) * 100) if all_trade_logs else 0.0
+    
     sorted_trades = sorted(all_trade_logs, key=lambda x: x['Exit_Date'])
     
     equity_curve.append({"time": df_test.index[0].strftime('%Y-%m-%d'), "value": initial_cash})
+    running_pnl = 0
     for t in sorted_trades:
         running_pnl += t['PnL']
         equity_curve.append({
@@ -264,31 +343,98 @@ def run_walk_forward(symbol, initial_cash=10000.0, train_days=365, test_days=30,
         })
     equity_curve.append({"time": df_test.index[-1].strftime('%Y-%m-%d'), "value": current_cash})
 
-    log(f"✅ [{symbol}] 완료: 수익률 {total_roi:+.2f}%, 거래 {len(all_trade_logs)}회")
+    log(f"✅ [{symbol}] 완료: ROI {total_roi:+.2f}%, MDD {mdd:.2f}%")
 
     return {
         "symbol": symbol,
         "roi": round(total_roi, 2),
+        "mdd": round(mdd, 2),
+        "win_rate": round(win_rate, 2),
         "final_balance": round(current_cash, 2),
         "trade_count": len(all_trade_logs),
         "trades": sorted_trades,
-        "equity_curve": equity_curve
+        "equity_curve": equity_curve,
+        "csv_path": csv_path,
+        "params": cfg
     }
 
-def run_batch_backtest(initial_cash=10000.0, train_days=365, test_days=30, update_data=False, log_func=None):
+def run_batch_backtest(initial_cash=10000.0, train_days=365, test_days=30, update_data=False, log_func=None, dynamic_config=None):
     def log(msg):
         if log_func: log_func(msg)
         else: print(msg)
+    
+    cfg = dynamic_config if dynamic_config else CONFIG
+    target_symbols = cfg.get('SYMBOLS', [])
+
     results = []
     log("🚀 전체 포트폴리오 백테스팅 시작...")
-    for symbol in CONFIG['SYMBOLS']:
-        res = run_walk_forward(symbol, initial_cash, train_days, test_days, update_data, log_func)
+    
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    batch_dir_name = f"Batch_{ts}"
+    batch_dir_path = os.path.join(DATA_DIR, 'backtests', batch_dir_name)
+    os.makedirs(batch_dir_path, exist_ok=True)
+    
+    for symbol in target_symbols:
+        res = run_walk_forward(symbol, initial_cash, train_days, test_days, update_data, log_func, dynamic_config=cfg, output_dir=batch_dir_path)
         if "error" not in res: results.append(res)
     
-    if not results: return {"error": "No results"}
+    if not results: 
+        if os.path.exists(batch_dir_path): shutil.rmtree(batch_dir_path)
+        return {"error": "No results"}
+    
+    zip_path = ""
+    try:
+        df_list = []
+        for res in results:
+            if not res['equity_curve']: continue
+            
+            df = pd.DataFrame(res['equity_curve'])
+            df['Date'] = pd.to_datetime(df['time'])
+            df.set_index('Date', inplace=True)
+            df.sort_index(inplace=True)
+            
+            df[res['symbol']] = df['value'] - initial_cash 
+            df = df[[res['symbol']]] 
+            df = df[~df.index.duplicated(keep='last')]
+            df_list.append(df)
+        
+        portfolio_df = pd.concat(df_list, axis=1).sort_index()
+        portfolio_df.fillna(method='ffill', inplace=True)
+        portfolio_df.fillna(0, inplace=True)
+        
+        portfolio_df['Total_Equity'] = initial_cash + portfolio_df.sum(axis=1)
+        
+        summary_filename = f"Portfolio_Summary.csv"
+        portfolio_df.reset_index(inplace=True)
+        portfolio_df.to_csv(os.path.join(batch_dir_path, summary_filename), index=False)
+        
+        final_equity = portfolio_df['Total_Equity'].iloc[-1]
+        pf_roi = (final_equity - initial_cash) / initial_cash * 100
+        
+        peak = portfolio_df['Total_Equity'].cummax()
+        drawdown = (portfolio_df['Total_Equity'] - peak) / peak * 100
+        pf_mdd = abs(drawdown.min())
+        
+        zip_base_name = os.path.join(DATA_DIR, 'backtests', batch_dir_name)
+        zip_path_created = shutil.make_archive(zip_base_name, 'zip', root_dir=os.path.join(DATA_DIR, 'backtests'), base_dir=batch_dir_name)
+        
+        shutil.rmtree(batch_dir_path)
+        zip_path = zip_path_created
+        
+    except Exception as e:
+        log(f"⚠️ 포트폴리오 병합 및 압축 중 오류: {e}")
+        pf_roi = 0
+        pf_mdd = 0
+
     avg_roi = sum(r['roi'] for r in results) / len(results)
-    total_balance = sum(r['final_balance'] for r in results)
-    start_total = initial_cash * len(results)
-    pf_roi = (total_balance - start_total) / start_total * 100
-    log(f"🏆 [종합] 평균 ROI: {avg_roi:+.2f}%, 전체 ROI: {pf_roi:+.2f}%")
-    return {"type": "batch", "avg_roi": round(avg_roi, 2), "portfolio_roi": round(pf_roi, 2), "details": results}
+    
+    log(f"🏆 [종합] Portfolio ROI: {pf_roi:+.2f}%, Portfolio MDD: {pf_mdd:.2f}%")
+    
+    return {
+        "type": "batch", 
+        "avg_roi": round(avg_roi, 2), 
+        "portfolio_roi": round(pf_roi, 2), 
+        "avg_mdd": round(pf_mdd, 2),
+        "details": results,
+        "csv_path": zip_path 
+    }

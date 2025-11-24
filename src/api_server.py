@@ -3,7 +3,7 @@ import sys
 import asyncio
 import json
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
@@ -13,7 +13,7 @@ import uvicorn
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from config import BASE_DIR, MODELS_DIR, DATA_DIR
 
-# 백테스팅 모듈 임포트 (존재한다고 가정)
+# 백테스팅 모듈 임포트
 try:
     import backtest_runner
 except ImportError:
@@ -35,6 +35,9 @@ class BacktestParams(BaseModel):
     test_days: int = 30
     update_data: bool = False
     is_batch: bool = False
+
+class CustomBacktestParams(BacktestParams):
+    custom_settings: Dict[str, Any] = {}
 
 class BalanceReset(BaseModel):
     amount: float
@@ -86,16 +89,12 @@ async def reset_config():
 # ---------------------------------------------------------
 @app.get("/api/status")
 async def get_status():
-    """봇의 현재 상태(잔고, 포지션 등) 조회"""
+    """봇의 현재 상태 조회"""
     trader = get_trader()
-    
     free, total = await trader.get_balance()
     positions = await trader.get_positions()
-    
-    # 저장된 모의투자 잔고 가져오기 (설정 화면용)
     saved_paper_bal = trader.get_saved_paper_balance()
     
-    # 디스코드 봇 연결 상태 확인
     discord_active = False
     if hasattr(app.state, 'hub') and app.state.hub.discord_bot:
         discord_active = app.state.hub.discord_bot.is_ready()
@@ -121,26 +120,17 @@ async def control_system(cmd: ControlCommand):
             raise HTTPException(status_code=400, detail="Invalid mode")
     
     elif cmd.command == "stop":
-        # [수정됨] 정지 시 보유 포지션 전량 청산 로직 실행
         close_log = await trader.close_all_positions()
-        
-        # 청산 후 모드 OFF 전환
         mode_log = await trader.set_mode('OFF')
-        
-        combined_msg = f"{close_log}\n{mode_log}"
-        return {"status": "success", "message": combined_msg}
+        return {"status": "success", "message": f"{close_log}\n{mode_log}"}
         
     return {"status": "error", "message": "Unknown command"}
 
 @app.post("/api/trade/close/{symbol:path}")
 async def force_close(symbol: str):
-    """특정 포지션 강제 청산 (URL의 symbol 파라미터 처리 개선)"""
+    """특정 포지션 강제 청산"""
     trader = get_trader()
-    
-    # URL 디코딩 및 포맷 정규화 (예: BTC_USDT -> BTC/USDT)
-    # FastAPI는 자동으로 %2F를 /로 디코딩해주지만, 혹시 언더스코어로 오는 경우 대비
     clean_symbol = symbol.replace('_', '/').strip()
-    
     msg = await trader.safe_force_close(clean_symbol)
     return {"status": "success", "message": msg}
 
@@ -152,24 +142,33 @@ async def reset_paper_balance(data: BalanceReset):
     return {"status": "success", "balance": new_bal}
 
 # ---------------------------------------------------------
-# [Routes] 3. History & Analysis (이력 및 분석)
+# [Routes] 3. Backtest Lab (백테스팅 연구소)
 # ---------------------------------------------------------
-@app.get("/api/history")
-async def get_history(mode: str = "PAPER"):
-    """거래 이력 조회"""
-    trader = get_trader()
-    data = trader.get_trade_history(target_mode=mode)
-    return data
 
+# 기존 단순 백테스트 (하위 호환용)
 @app.post("/api/backtest")
 async def run_backtest(params: BacktestParams):
-    """백테스팅 실행 (비동기 처리)"""
+    return await run_custom_backtest(CustomBacktestParams(**params.dict(), custom_settings={}))
+
+# 커스텀 백테스트 실행 및 저장
+@app.post("/api/backtest/run_custom")
+async def run_custom_backtest(params: CustomBacktestParams):
     if backtest_runner is None:
         raise HTTPException(status_code=501, detail="Backtest module not found")
         
     hub = get_hub()
+    trader = get_trader()
     
-    # 웹소켓으로 로그를 보내기 위한 콜백 함수
+    # 1. 동적 설정 생성 (기본 설정 + 커스텀 설정 병합)
+    current_config = trader.config_manager.get_all().copy()
+    if params.custom_settings:
+        current_config.update(params.custom_settings)
+    
+    # [NEW] 입력받은 학습/테스트 기간을 설정 정보에 포함시킴 (결과 화면 표시용)
+    current_config['TRAIN_DAYS'] = params.train_days
+    current_config['TEST_DAYS'] = params.test_days
+    
+    # 로그 콜백
     def log_callback(msg):
         try:
             loop = asyncio.get_running_loop()
@@ -179,12 +178,11 @@ async def run_backtest(params: BacktestParams):
         except RuntimeError:
             pass
 
-    # blocking 연산이므로 executor에서 실행
     loop = asyncio.get_running_loop()
     
     try:
+        # 2. 실행
         if params.is_batch:
-            # 전체 포트폴리오 백테스팅
             result = await loop.run_in_executor(
                 None,
                 lambda: backtest_runner.run_batch_backtest(
@@ -192,11 +190,25 @@ async def run_backtest(params: BacktestParams):
                     train_days=params.train_days,
                     test_days=params.test_days,
                     update_data=params.update_data,
-                    log_func=log_callback
+                    log_func=log_callback,
+                    dynamic_config=current_config
                 )
             )
+            # 배치 결과 저장
+            if "error" not in result:
+                save_data = {
+                    "symbol": "PORTFOLIO",
+                    "params": current_config,
+                    "roi": result.get('portfolio_roi', 0),
+                    "mdd": result.get('avg_mdd', 0),
+                    "win_rate": 0, 
+                    "trade_count": sum(len(r.get('trades', [])) for r in result.get('details', [])),
+                    "final_balance": 0,
+                    "csv_path": result.get('csv_path', '') # zip 파일 경로
+                }
+                trader.save_backtest_result(save_data)
+
         else:
-            # 단일 심볼 백테스팅
             result = await loop.run_in_executor(
                 None,
                 lambda: backtest_runner.run_walk_forward(
@@ -205,9 +217,13 @@ async def run_backtest(params: BacktestParams):
                     train_days=params.train_days,
                     test_days=params.test_days,
                     update_data=params.update_data,
-                    log_func=log_callback
+                    log_func=log_callback,
+                    dynamic_config=current_config
                 )
             )
+            # 단일 결과 저장
+            if "error" not in result:
+                trader.save_backtest_result(result)
             
         if "error" in result:
             raise HTTPException(status_code=500, detail=result['error'])
@@ -217,9 +233,48 @@ async def run_backtest(params: BacktestParams):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/backtest/history")
+async def get_backtest_history():
+    """백테스트 실행 이력 조회"""
+    trader = get_trader()
+    return trader.get_backtest_history()
+
+@app.delete("/api/backtest/history/{record_id}")
+async def delete_backtest_history(record_id: int):
+    """백테스트 이력 및 파일 삭제"""
+    trader = get_trader()
+    trader.delete_backtest_record(record_id)
+    return {"status": "success", "message": "Deleted"}
+
+@app.get("/api/backtest/download/{record_id}")
+async def download_backtest_csv(record_id: int):
+    """백테스트 파일(CSV 또는 ZIP) 다운로드"""
+    trader = get_trader()
+    
+    history = trader.get_backtest_history()
+    target = next((item for item in history if item["id"] == record_id), None)
+    
+    if not target:
+        raise HTTPException(status_code=404, detail="Record not found")
+        
+    file_path = target.get("csv_path")
+    if not file_path or not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    # [NEW] 확장자에 따른 미디어 타입 자동 설정
+    filename = os.path.basename(file_path)
+    media_type = 'application/zip' if filename.endswith('.zip') else 'text/csv'
+        
+    return FileResponse(path=file_path, filename=filename, media_type=media_type)
+
 # ---------------------------------------------------------
 # [Routes] 4. WebSocket & Static Files
 # ---------------------------------------------------------
+@app.get("/api/history")
+async def get_history(mode: str = "PAPER"):
+    trader = get_trader()
+    return trader.get_trade_history(target_mode=mode)
+
 @app.websocket("/ws/logs")
 async def websocket_endpoint(websocket: WebSocket):
     hub = get_hub()
@@ -232,19 +287,13 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception:
         hub.disconnect_websocket(websocket)
 
-# 정적 파일 서빙 (index.html)
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
-    # 현재 파일(api_server.py)이 있는 경로의 'web' 폴더 안에서 index.html을 찾음
     base_dir = os.path.dirname(os.path.abspath(__file__))
     html_path = os.path.join(base_dir, "web", "index.html")
-    
     if os.path.exists(html_path):
         with open(html_path, "r", encoding="utf-8") as f:
             return f.read()
-    
-    # 디버깅을 위해 경로를 출력해주는 것이 좋음
-    print(f"❌ 파일을 찾을 수 없음: {html_path}")
     return f"index.html not found at {html_path}"
 
 # ---------------------------------------------------------

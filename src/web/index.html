@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>QuantBot Hybrid V2</title>
     
     <!-- CDN Libraries -->
@@ -16,21 +16,70 @@
 
     <style>
         /* Custom Scrollbar */
-        .scrollbar-hide::-webkit-scrollbar { display: none; }
-        .log-container::-webkit-scrollbar { width: 8px; }
-        .log-container::-webkit-scrollbar-track { background: #1f2937; }
-        .log-container::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 4px; }
+        .custom-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+        .custom-scroll::-webkit-scrollbar-track { background: #1f2937; }
+        .custom-scroll::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 3px; }
+        .custom-scroll::-webkit-scrollbar-thumb:hover { background: #6b7280; }
         
-        body { background-color: #111827; color: #e5e7eb; font-family: 'Inter', sans-serif; }
+        body { background-color: #0b0f19; color: #e5e7eb; font-family: 'Inter', sans-serif; -webkit-tap-highlight-color: transparent; }
         
-        /* Tab Styles */
-        .tab-active { border-bottom: 2px solid #3b82f6; color: #3b82f6; background: rgba(59, 130, 246, 0.1); }
-        .tab-inactive { color: #9ca3af; }
-        .tab-inactive:hover { color: #e5e7eb; background: rgba(255, 255, 255, 0.05); }
-        
-        /* Animation */
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        /* Animations */
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
         .animate-fade-in { animation: fadeIn 0.3s ease-out forwards; }
+        
+        /* [Desktop] Tooltip Box Style */
+        .tooltip-box { 
+            position: absolute; 
+            top: 100%; right: 0; margin-top: 10px; 
+            width: 320px; max-height: 300px; overflow-y: auto; 
+            background-color: #1f2937; color: #d1d5db; text-align: left; 
+            border-radius: 8px; padding: 12px; z-index: 100; 
+            border: 1px solid #4b5563; 
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+            font-size: 0.75rem; white-space: pre-wrap; line-height: 1.5;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        }
+        .tooltip-box::-webkit-scrollbar { width: 6px; }
+        .tooltip-box::-webkit-scrollbar-track { background: #111827; border-radius: 3px; }
+        .tooltip-box::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 3px; }
+
+        /* [Mobile] Modal Style */
+        .modal-overlay {
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background-color: rgba(0, 0, 0, 0.75);
+            z-index: 999;
+            display: flex; justify-content: center; align-items: center;
+            padding: 20px;
+            backdrop-filter: blur(2px);
+        }
+        .modal-content {
+            background-color: #1f2937;
+            border: 1px solid #374151;
+            border-radius: 12px;
+            width: 100%; max-width: 400px; max-height: 80vh;
+            display: flex; flex-direction: column;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            animation: fadeIn 0.2s ease-out;
+        }
+        .modal-header {
+            padding: 16px; border-bottom: 1px solid #374151;
+            display: flex; justify-content: space-between; align-items: center;
+            font-weight: bold; color: #f3f4f6; font-size: 1rem;
+        }
+        .modal-body {
+            padding: 16px; overflow-y: auto;
+            white-space: pre-wrap; font-family: monospace;
+            font-size: 0.85rem; color: #d1d5db; line-height: 1.6;
+        }
+        .modal-footer {
+            padding: 12px 16px; border-top: 1px solid #374151;
+            text-align: right; background-color: #111827; border-radius: 0 0 12px 12px;
+        }
+
+        /* Mobile Safe Area */
+        .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
     </style>
 </head>
 <body>
@@ -46,110 +95,120 @@
             const logEndRef = useRef(null);
             useEffect(() => { logEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [logs]);
 
-            if (!status) return <div className="text-center py-20 animate-pulse">Loading Dashboard Data...</div>;
+            if (!status) return <div className="flex h-[50vh] items-center justify-center text-blue-400 animate-pulse flex-col gap-2"><i className="ph ph-spinner animate-spin text-3xl"></i><span>System Loading...</span></div>;
 
             return (
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-fade-in">
-                    <div className="lg:col-span-2 space-y-6">
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-6 animate-fade-in pb-20 md:pb-0">
+                    <div className="lg:col-span-2 space-y-4 md:space-y-6">
                         {/* 자산 카드 */}
-                        <div className="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700">
-                            <h2 className="text-lg font-semibold text-gray-300 mb-4 flex items-center gap-2">
+                        <div className="bg-gray-800 p-5 rounded-xl shadow-lg border border-gray-700">
+                            <h2 className="text-base md:text-lg font-semibold text-gray-300 mb-4 flex items-center gap-2">
                                 <i className="ph ph-wallet text-blue-400"></i> 자산 현황 ({status.mode})
                             </h2>
-                            <div className="grid grid-cols-2 gap-4">
-                                <div className="bg-gray-900 p-5 rounded-lg border border-gray-700/50">
-                                    <p className="text-gray-500 text-sm mb-1">총 자산 (Total)</p>
-                                    <p className="text-2xl font-bold text-white tracking-wide">${status.balance.total.toLocaleString()}</p>
+                            <div className="grid grid-cols-2 gap-3 md:gap-4">
+                                <div className="bg-gray-900 p-4 rounded-lg border border-gray-700/50">
+                                    <p className="text-gray-500 text-xs md:text-sm mb-1">총 자산 (Total)</p>
+                                    <p className="text-xl md:text-2xl font-bold text-white tracking-wide">${status.balance.total.toLocaleString()}</p>
                                 </div>
-                                <div className="bg-gray-900 p-5 rounded-lg border border-gray-700/50">
-                                    <p className="text-gray-500 text-sm mb-1">주문 가능 (Free)</p>
-                                    <p className="text-2xl font-bold text-blue-400 tracking-wide">${status.balance.free.toLocaleString()}</p>
+                                <div className="bg-gray-900 p-4 rounded-lg border border-gray-700/50">
+                                    <p className="text-gray-500 text-xs md:text-sm mb-1">주문 가능 (Free)</p>
+                                    <p className="text-xl md:text-2xl font-bold text-blue-400 tracking-wide">${status.balance.free.toLocaleString()}</p>
                                 </div>
                             </div>
                         </div>
 
-                        {/* 포지션 테이블 */}
-                        <div className="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700">
-                            <h2 className="text-lg font-semibold text-gray-300 mb-4 flex items-center gap-2">
+                        {/* 포지션 섹션 (반응형) */}
+                        <div className="bg-gray-800 p-5 rounded-xl shadow-lg border border-gray-700">
+                            <h2 className="text-base md:text-lg font-semibold text-gray-300 mb-4 flex items-center gap-2">
                                 <i className="ph ph-chart-line-up text-green-400"></i> 보유 포지션
                             </h2>
+                            
                             {status.positions.length === 0 ? (
-                                <div className="text-center py-10 text-gray-500 bg-gray-900/50 rounded-lg border border-dashed border-gray-700">
-                                    현재 보유 중인 포지션이 없습니다.
+                                <div className="text-center py-8 text-gray-500 bg-gray-900/50 rounded-lg border border-dashed border-gray-700 text-sm">
+                                    보유 중인 포지션이 없습니다.
                                 </div>
                             ) : (
-                                <div className="overflow-x-auto rounded-lg border border-gray-700">
-                                    <table className="w-full text-left text-sm text-gray-400">
-                                        <thead className="bg-gray-900 uppercase text-xs font-semibold text-gray-300">
-                                            <tr>
-                                                <th className="px-4 py-3">Symbol</th>
-                                                <th className="px-4 py-3">Side</th>
-                                                <th className="px-4 py-3">Entry</th>
-                                                <th className="px-4 py-3">Unrealized PnL</th>
-                                                <th className="px-4 py-3 text-right">Action</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody className="divide-y divide-gray-800">
-                                            {status.positions.map((pos) => (
-                                                <tr key={pos.symbol} className="hover:bg-gray-700/50 transition-colors">
-                                                    <td className="px-4 py-4 font-medium text-white">{pos.symbol}</td>
-                                                    <td className="px-4 py-4">
-                                                        <span className={`px-2.5 py-1 rounded text-xs font-bold ${pos.side === 'buy' ? 'bg-green-900/50 text-green-400 border border-green-800' : 'bg-red-900/50 text-red-400 border border-red-800'}`}>
+                                <>
+                                    {/* Desktop View: Table */}
+                                    <div className="hidden md:block overflow-x-auto rounded-lg border border-gray-700">
+                                        <table className="w-full text-left text-sm text-gray-400">
+                                            <thead className="bg-gray-900 uppercase text-xs font-semibold text-gray-300">
+                                                <tr>
+                                                    <th className="px-4 py-3">Symbol</th>
+                                                    <th className="px-4 py-3">Side</th>
+                                                    <th className="px-4 py-3">Entry</th>
+                                                    <th className="px-4 py-3">PnL</th>
+                                                    <th className="px-4 py-3 text-right">Action</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-gray-800">
+                                                {status.positions.map((pos) => (
+                                                    <tr key={pos.symbol} className="hover:bg-gray-700/50">
+                                                        <td className="px-4 py-3 font-medium text-white">{pos.symbol}</td>
+                                                        <td className="px-4 py-3"><span className={`px-2 py-1 rounded text-xs font-bold ${pos.side==='buy'?'bg-green-900/50 text-green-400':'bg-red-900/50 text-red-400'}`}>{pos.side.toUpperCase()} x{pos.leverage}</span></td>
+                                                        <td className="px-4 py-3 font-mono">${pos.entryPrice}</td>
+                                                        <td className={`px-4 py-3 font-bold ${pos.unrealizedPnl>=0?'text-green-400':'text-red-400'}`}>{pos.unrealizedPnl>0?'+':''}{pos.unrealizedPnl}</td>
+                                                        <td className="px-4 py-3 text-right"><button onClick={()=>forceClose(pos.symbol)} className="text-red-400 hover:bg-red-900/30 px-2 py-1 rounded text-xs border border-red-800">청산</button></td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+
+                                    {/* Mobile View: Card List */}
+                                    <div className="md:hidden space-y-3">
+                                        {status.positions.map((pos) => (
+                                            <div key={pos.symbol} className="bg-gray-900/80 p-4 rounded-lg border border-gray-700 flex flex-col gap-2 shadow-sm">
+                                                <div className="flex justify-between items-center">
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="font-bold text-white text-lg">{pos.symbol.split('/')[0]}</span>
+                                                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold border ${pos.side==='buy'?'text-green-400 border-green-800 bg-green-900/30':'text-red-400 border-red-800 bg-red-900/30'}`}>
                                                             {pos.side.toUpperCase()} x{pos.leverage}
                                                         </span>
-                                                    </td>
-                                                    <td className="px-4 py-4 font-mono text-gray-300">${pos.entryPrice}</td>
-                                                    <td className={`px-4 py-4 font-bold ${pos.unrealizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                                        {pos.unrealizedPnl > 0 ? '+' : ''}{pos.unrealizedPnl}
-                                                    </td>
-                                                    <td className="px-4 py-4 text-right">
-                                                        <button onClick={() => forceClose(pos.symbol)} className="bg-red-600/20 hover:bg-red-600/40 text-red-400 border border-red-600/50 px-3 py-1.5 rounded text-xs transition">
-                                                            청산
-                                                        </button>
-                                                    </td>
-                                                </tr>
-                                            ))}
-                                        </tbody>
-                                    </table>
-                                </div>
+                                                    </div>
+                                                    <button onClick={()=>forceClose(pos.symbol)} className="text-red-400 text-xs border border-red-800 bg-red-900/20 px-3 py-1.5 rounded-full">청산</button>
+                                                </div>
+                                                <div className="flex justify-between text-sm mt-1">
+                                                    <div className="text-gray-400">진입가 <span className="text-gray-200 font-mono">${pos.entryPrice}</span></div>
+                                                    <div className={`font-bold ${pos.unrealizedPnl>=0?'text-green-400':'text-red-400'}`}>
+                                                        {pos.unrealizedPnl>0?'+':''}{pos.unrealizedPnl} USD
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </>
                             )}
                         </div>
                     </div>
 
                     {/* 제어 및 로그 */}
-                    <div className="space-y-6">
-                        <div className="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700">
-                            <h2 className="text-lg font-semibold text-gray-300 mb-4">🕹️ 제어 패널</h2>
-                            <div className="space-y-3">
-                                <button onClick={() => sendCommand('set_mode', 'PAPER')} className="w-full py-3 bg-green-600/20 hover:bg-green-600/30 text-green-400 border border-green-600/50 rounded-lg font-bold transition flex justify-center items-center gap-2">
-                                    <i className="ph ph-flask text-xl"></i> 모의매매 시작
+                    <div className="space-y-4 md:space-y-6">
+                        <div className="bg-gray-800 p-5 rounded-xl shadow-lg border border-gray-700">
+                            <h2 className="text-base md:text-lg font-semibold text-gray-300 mb-4">🕹️ 제어 패널</h2>
+                            <div className="grid grid-cols-1 gap-3">
+                                <button onClick={() => sendCommand('set_mode', 'PAPER')} className="w-full py-3 bg-green-600/10 hover:bg-green-600/20 text-green-400 border border-green-600/50 rounded-lg font-bold transition flex items-center justify-center gap-2 text-sm">
+                                    <i className="ph ph-flask text-lg"></i> 모의매매
                                 </button>
-                                <button onClick={() => sendCommand('set_mode', 'REAL')} className="w-full py-3 bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-600/50 rounded-lg font-bold transition flex justify-center items-center gap-2">
-                                    <i className="ph ph-lightning text-xl"></i> 실전매매 시작
+                                <button onClick={() => sendCommand('set_mode', 'REAL')} className="w-full py-3 bg-red-600/10 hover:bg-red-600/20 text-red-400 border border-red-600/50 rounded-lg font-bold transition flex items-center justify-center gap-2 text-sm">
+                                    <i className="ph ph-lightning text-lg"></i> 실전매매
                                 </button>
-                                <button onClick={() => sendCommand('stop', 'OFF')} className="w-full py-3 bg-gray-600/20 hover:bg-gray-600/30 text-gray-400 border border-gray-600/50 rounded-lg font-bold transition flex justify-center items-center gap-2">
-                                    <i className="ph ph-stop-circle text-xl"></i> 시스템 정지
+                                <button onClick={() => sendCommand('stop', 'OFF')} className="w-full py-3 bg-gray-600/10 hover:bg-gray-600/20 text-gray-400 border border-gray-600/50 rounded-lg font-bold transition flex items-center justify-center gap-2 text-sm">
+                                    <i className="ph ph-stop-circle text-lg"></i> 시스템 정지
                                 </button>
                             </div>
                         </div>
 
-                        <div className="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700 flex flex-col h-[400px]">
-                            <div className="flex justify-between items-center mb-4">
-                                <h2 className="text-lg font-semibold text-gray-300 flex items-center gap-2"><i className="ph ph-terminal-window text-purple-400"></i> 시스템 로그</h2>
-                                <span className="text-xs text-gray-500">Real-time</span>
+                        <div className="bg-gray-800 p-5 rounded-xl shadow-lg border border-gray-700 flex flex-col h-[300px] md:h-[400px]">
+                            <div className="flex justify-between items-center mb-3">
+                                <h2 className="text-base md:text-lg font-semibold text-gray-300 flex items-center gap-2"><i className="ph ph-terminal-window text-purple-400"></i> 로그</h2>
+                                <span className="text-[10px] text-gray-500 bg-gray-900 px-2 py-1 rounded">Real-time</span>
                             </div>
-                            <div className="log-container flex-1 overflow-y-auto bg-gray-950 p-4 rounded-lg font-mono text-xs space-y-1.5 border border-gray-900 shadow-inner">
-                                {logs.length === 0 && <p className="text-gray-600 text-center mt-10 italic">로그 대기 중...</p>}
+                            <div className="flex-1 overflow-y-auto bg-gray-950 p-3 rounded-lg font-mono text-[10px] md:text-xs space-y-1.5 border border-gray-900 shadow-inner custom-scroll">
                                 {logs.map((log, i) => (
-                                    <div key={i} className="break-words leading-relaxed hover:bg-gray-900/50 px-1 rounded">
-                                        <span className="text-gray-600 mr-2 select-none">[{log.time}]</span>
-                                        <span className={
-                                            log.msg.includes("ERROR") ? "text-red-400 font-bold" :
-                                            log.msg.includes("WARN") ? "text-yellow-400" :
-                                            log.msg.includes("BACKTEST") ? "text-purple-400" :
-                                            log.msg.includes("SYSTEM") ? "text-blue-300" :
-                                            "text-gray-300"
-                                        }>{log.msg}</span>
+                                    <div key={i} className="break-words leading-relaxed opacity-90">
+                                        <span className="text-gray-600 mr-1">[{log.time}]</span>
+                                        <span className={log.msg.includes("ERROR")?"text-red-400":log.msg.includes("WARN")?"text-yellow-400":log.msg.includes("BACKTEST")?"text-cyan-400":"text-gray-300"}>{log.msg}</span>
                                     </div>
                                 ))}
                                 <div ref={logEndRef} />
@@ -181,7 +240,6 @@
             useEffect(() => {
                 if (data && data.equity_curve && chartRef.current) {
                     if (chartInstance.current) chartInstance.current.destroy();
-                    
                     const ctx = chartRef.current.getContext('2d');
                     const labels = data.equity_curve.map(d => d.time.substring(5, 16)); 
                     const values = data.equity_curve.map(d => d.value);
@@ -190,420 +248,307 @@
                     chartInstance.current = new Chart(ctx, {
                         type: 'line',
                         data: {
-                            labels: labels,
-                            datasets: [{
-                                label: '누적 실현 손익 (USD)',
-                                data: values,
-                                borderColor: isPositive ? '#34d399' : '#f87171', 
-                                backgroundColor: isPositive ? 'rgba(52, 211, 153, 0.1)' : 'rgba(248, 113, 113, 0.1)',
-                                borderWidth: 2,
-                                fill: true,
-                                tension: 0.3,
-                                pointRadius: 2
+                            labels, datasets: [{
+                                label: 'PnL', data: values, borderColor: isPositive?'#34d399':'#f87171', 
+                                backgroundColor: isPositive?'rgba(52, 211, 153, 0.1)':'rgba(248, 113, 113, 0.1)',
+                                borderWidth: 2, fill: true, tension: 0.3, pointRadius: 0
                             }]
                         },
-                        options: {
-                            responsive: true,
-                            maintainAspectRatio: false,
-                            plugins: { legend: { display: false } },
-                            scales: {
-                                x: { display: false }, 
-                                y: { grid: { color: '#374151' }, ticks: { color: '#9ca3af' } }
-                            }
-                        }
+                        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { grid: { color: '#374151' } } } }
                     });
                 }
             }, [data]);
 
             return (
-                <div className="space-y-6 animate-fade-in">
+                <div className="space-y-4 md:space-y-6 animate-fade-in pb-20">
                     <div className="flex justify-between items-center bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-lg">
-                        <h2 className="text-xl font-bold text-white flex items-center gap-2">
-                            <i className="ph ph-chart-bar text-yellow-400"></i> 매매 성과 분석
-                        </h2>
+                        <h2 className="text-lg md:text-xl font-bold text-white flex items-center gap-2"><i className="ph ph-chart-bar text-yellow-400"></i> 이력</h2>
                         <div className="flex bg-gray-900 rounded-lg p-1 border border-gray-600">
-                            <button onClick={()=>setMode('PAPER')} className={`px-4 py-1.5 rounded-md text-sm font-bold transition ${mode==='PAPER'?'bg-green-600 text-white':'text-gray-400 hover:text-white'}`}>모의투자</button>
-                            <button onClick={()=>setMode('REAL')} className={`px-4 py-1.5 rounded-md text-sm font-bold transition ${mode==='REAL'?'bg-red-600 text-white':'text-gray-400 hover:text-white'}`}>실전투자</button>
+                            {['PAPER', 'REAL'].map(m => (
+                                <button key={m} onClick={()=>setMode(m)} className={`px-3 py-1.5 rounded-md text-xs md:text-sm font-bold transition ${mode===m?'bg-blue-600 text-white':'text-gray-400'}`}>{m}</button>
+                            ))}
                         </div>
                     </div>
-
-                    {!data ? (
-                         <div className="text-center py-20"><i className="ph ph-spinner animate-spin text-4xl text-blue-500"></i></div>
-                    ) : (
+                    {data ? (
                         <>
-                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                                <div className="space-y-4">
-                                    <div className="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow-lg">
-                                        <p className="text-gray-400 text-sm">누적 실현 손익 (Net PnL)</p>
-                                        <p className={`text-3xl font-bold mt-1 ${data.summary.total_pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                            {data.summary.total_pnl > 0 ? '+' : ''}{data.summary.total_pnl.toLocaleString()} USD
-                                        </p>
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-lg">
-                                            <p className="text-gray-400 text-xs">승률 (Win Rate)</p>
-                                            <p className="text-xl font-bold text-blue-400 mt-1">{data.summary.win_rate}%</p>
-                                        </div>
-                                        <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-lg">
-                                            <p className="text-gray-400 text-xs">총 거래 횟수</p>
-                                            <p className="text-xl font-bold text-white mt-1">{data.summary.total_trades}회</p>
-                                        </div>
-                                    </div>
-                                    <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-lg">
-                                        <p className="text-gray-400 text-xs">최고의 거래 (Best)</p>
-                                        <p className="text-xl font-bold text-green-400 mt-1">+${data.summary.best_trade}</p>
-                                    </div>
-                                </div>
-
-                                <div className="lg:col-span-2 bg-gray-800 p-5 rounded-xl border border-gray-700 shadow-lg flex flex-col">
-                                    <h3 className="text-sm font-semibold text-gray-400 mb-4">📈 수익 곡선 (Cumulative Equity)</h3>
-                                    <div className="flex-1 relative min-h-[250px]">
-                                        {data.equity_curve.length > 0 ? (
-                                            <canvas ref={chartRef}></canvas>
-                                        ) : (
-                                            <div className="flex items-center justify-center h-full text-gray-600">데이터 부족</div>
-                                        )}
-                                    </div>
-                                </div>
+                            <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-lg h-[250px] md:h-[300px] relative">
+                                <canvas ref={chartRef}></canvas>
                             </div>
-
-                            <div className="bg-gray-800 rounded-xl border border-gray-700 shadow-lg overflow-hidden">
-                                <div className="p-4 border-b border-gray-700 font-bold text-gray-300">📄 상세 거래 내역 (최신순)</div>
-                                <div className="overflow-x-auto max-h-[500px] overflow-y-auto">
+                            {/* Mobile Card View */}
+                            <div className="md:hidden space-y-3">
+                                {data.trades.map(t => (
+                                    <div key={t.id} className="bg-gray-800 p-4 rounded-lg border border-gray-700 shadow-sm flex justify-between items-center">
+                                        <div>
+                                            <div className="text-white font-bold flex items-center gap-2">
+                                                {t.symbol} 
+                                                <span className={`text-[10px] px-1.5 rounded border ${t.side==='buy'?'border-green-800 text-green-400':'border-red-800 text-red-400'}`}>{t.side.toUpperCase()}</span>
+                                            </div>
+                                            <div className="text-gray-500 text-xs mt-1">{t.timestamp}</div>
+                                        </div>
+                                        <div className={`font-bold ${t.pnl>=0?'text-green-400':'text-red-400'}`}>
+                                            {t.pnl>0?'+':''}{t.pnl.toFixed(2)}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                            {/* Desktop Table View */}
+                            <div className="hidden md:block bg-gray-800 rounded-xl border border-gray-700 shadow-lg overflow-hidden">
+                                <div className="overflow-x-auto max-h-[500px] overflow-y-auto custom-scroll">
                                     <table className="w-full text-sm text-left text-gray-400">
                                         <thead className="text-xs text-gray-400 uppercase bg-gray-900 sticky top-0">
                                             <tr>
                                                 <th className="px-4 py-3">Time</th>
                                                 <th className="px-4 py-3">Symbol</th>
                                                 <th className="px-4 py-3">Side</th>
-                                                <th className="px-4 py-3 text-right">Price</th>
                                                 <th className="px-4 py-3 text-right">PnL</th>
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y divide-gray-700">
-                                            {data.trades.map((row) => (
-                                                <tr key={row.id} className="hover:bg-gray-700/50">
-                                                    <td className="px-4 py-3 whitespace-nowrap text-xs">{row.timestamp}</td>
-                                                    <td className="px-4 py-3 font-bold text-white">{row.symbol}</td>
-                                                    <td className="px-4 py-3">
-                                                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${row.side==='buy'?'bg-green-900/30 text-green-400 border-green-800':'bg-red-900/30 text-red-400 border-red-800'}`}>
-                                                            {row.side.toUpperCase()}
-                                                        </span>
-                                                    </td>
-                                                    <td className="px-4 py-3 text-right font-mono">
-                                                        <div className="text-xs">In: {row.entry_price}</div>
-                                                        <div className="text-xs">Out: {row.exit_price}</div>
-                                                    </td>
-                                                    <td className={`px-4 py-3 text-right font-bold ${row.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                                        {row.pnl > 0 ? '+' : ''}{row.pnl.toFixed(2)}
-                                                    </td>
+                                            {data.trades.map(t => (
+                                                <tr key={t.id} className="hover:bg-gray-700/50">
+                                                    <td className="px-4 py-3 text-xs">{t.timestamp}</td>
+                                                    <td className="px-4 py-3 font-bold text-white">{t.symbol}</td>
+                                                    <td className="px-4 py-3"><span className={`px-2 py-0.5 rounded text-[10px] border ${t.side==='buy'?'border-green-800 text-green-400':'border-red-800 text-red-400'}`}>{t.side.toUpperCase()}</span></td>
+                                                    <td className={`px-4 py-3 text-right font-bold ${t.pnl>=0?'text-green-400':'text-red-400'}`}>{t.pnl>0?'+':''}{t.pnl.toFixed(2)}</td>
                                                 </tr>
                                             ))}
                                         </tbody>
                                     </table>
-                                    {data.trades.length === 0 && <div className="p-10 text-center text-gray-600">거래 내역이 없습니다.</div>}
                                 </div>
                             </div>
                         </>
-                    )}
+                    ) : <div className="text-center py-20 text-gray-500">데이터 로딩 중...</div>}
                 </div>
             );
         };
-
+// ------------------------------------------------------------------
+        // [Component] Backtest Lab (Updated: Mobile Modal & Desktop Tooltip)
         // ------------------------------------------------------------------
-        // [Component] Backtest Tab
-        // ------------------------------------------------------------------
-        const Backtest = ({ symbols }) => {
-            const [params, setParams] = useState(() => {
-                const saved = localStorage.getItem('bt_params');
-                if (saved) return JSON.parse(saved);
-                return {
-                    symbol: symbols[0] || "BTC/USDT",
-                    initial_cash: 10000,
-                    train_days: 365,
-                    test_days: 30,
-                    update_data: false
-                };
+        const BacktestLab = () => {
+            const [params, setParams] = useState({
+                symbol: "BTC/USDT", initial_cash: 10000, train_days: 365, test_days: 30, update_data: false, is_batch: false,
+                custom_settings: {
+                    RSI_BUY_LOWER: 30, RSI_BUY_UPPER: 65, RSI_SELL_LOWER: 35, RSI_SELL_UPPER: 70,
+                    STOP_LOSS_ATR: 2.0, TRAIL_TRIGGER_ATR: 2.0, TRAIL_DIST_ATR: 2.0,
+                    LEVERAGE: 2, MAX_OPEN_POSITIONS: 3
+                }
             });
-
+            const [history, setHistory] = useState([]);
             const [loading, setLoading] = useState(false);
             const [result, setResult] = useState(null);
+            
+            // [Desktop] 툴팁 상태 (클릭된 ID)
+            const [activeTooltipId, setActiveTooltipId] = useState(null);
+            // [Mobile] 모달 데이터 (설정값 객체)
+            const [mobileModalData, setMobileModalData] = useState(null);
+
             const chartRef = useRef(null);
             const chartInstance = useRef(null);
 
-            useEffect(() => {
-                localStorage.setItem('bt_params', JSON.stringify(params));
-            }, [params]);
-
-            const handleChange = (e) => {
-                const { name, value, type, checked } = e.target;
-                setParams(prev => ({ ...prev, [name]: type === 'checkbox' ? checked : value }));
+            // 데스크탑 툴팁 토글
+            const toggleTooltip = (id) => {
+                setActiveTooltipId(prev => (prev === id ? null : id));
             };
 
-            const runAnalysis = async (isBatch) => {
+            const formatParams = (p) => {
+                if (!p) return "설정 정보 없음";
+                const ignoredKeys = ['DATA_DIR', 'MODELS_DIR', 'BASE_DIR', 'DB_PATH', 'FETCHER_INTERVAL'];
+                return Object.entries(p)
+                    .filter(([key]) => !ignoredKeys.some(k => key.includes(k)))
+                    .map(([key, val]) => {
+                        const displayVal = Array.isArray(val) ? `[${val.join(', ')}]` : val;
+                        return `${key}: ${displayVal}`;
+                    })
+                    .join('\n');
+            };
+
+            useEffect(() => {
+                const init = async () => {
+                    try {
+                        const [cfgRes, histRes] = await Promise.all([axios.get('/api/config'), axios.get('/api/backtest/history')]);
+                        const cfg = cfgRes.data;
+                        setParams(p => ({
+                            ...p,
+                            symbol: cfg.SYMBOLS && cfg.SYMBOLS.length > 0 ? cfg.SYMBOLS[0] : "BTC/USDT",
+                            custom_settings: {
+                                ...p.custom_settings,
+                                LEVERAGE: cfg.LEVERAGE || 2, MAX_OPEN_POSITIONS: cfg.MAX_OPEN_POSITIONS || 3
+                            }
+                        }));
+                        setHistory(histRes.data);
+                    } catch(e) {}
+                };
+                init();
+            }, []);
+
+            const handleCustomChange = (e) => {
+                const { name, value } = e.target;
+                setParams(p => ({ ...p, custom_settings: { ...p.custom_settings, [name]: Number(value) } }));
+            };
+
+            const runExperiment = async () => {
                 if(loading) return;
                 setLoading(true);
                 setResult(null);
-                
+                setActiveTooltipId(null);
                 try {
-                    const payload = {
-                        symbol: params.symbol,
-                        initial_cash: Number(params.initial_cash),
-                        train_days: Number(params.train_days),
-                        test_days: Number(params.test_days),
-                        update_data: params.update_data,
-                        is_batch: isBatch
-                    };
-                    const res = await axios.post('/api/backtest', payload);
-                    setResult({ ...res.data, type: isBatch ? 'batch' : 'single' });
-                } catch (e) {
-                    alert("오류: " + (e.response?.data?.detail || e.message));
-                } finally {
-                    setLoading(false);
-                }
+                    const payload = { ...params, initial_cash: Number(params.initial_cash), train_days: Number(params.train_days), test_days: Number(params.test_days), custom_settings: params.custom_settings };
+                    const res = await axios.post('/api/backtest/run_custom', payload);
+                    setResult({ ...res.data, type: params.is_batch ? 'batch' : 'single' });
+                    const histRes = await axios.get('/api/backtest/history');
+                    setHistory(histRes.data);
+                } catch(e) { alert("Error: " + e.message); } 
+                finally { setLoading(false); }
+            };
+
+            const deleteRecord = async (id) => {
+                if(!confirm("삭제하시겠습니까?")) return;
+                try { await axios.delete(`/api/backtest/history/${id}`); setHistory(prev => prev.filter(item => item.id !== id)); } catch(e){}
             };
 
             useEffect(() => {
-                if (result && chartRef.current) {
+                if (result && result.equity_curve && chartRef.current) {
                     if (chartInstance.current) chartInstance.current.destroy();
                     const ctx = chartRef.current.getContext('2d');
-
                     if (result.type === 'single') {
-                        const labels = result.equity_curve.map(d => d.time);
-                        const data = result.equity_curve.map(d => d.value);
-                        
                         chartInstance.current = new Chart(ctx, {
                             type: 'line',
                             data: {
-                                labels: labels,
-                                datasets: [{
-                                    label: '누적 자산 (USDT)',
-                                    data: data,
-                                    borderColor: '#3b82f6',
-                                    backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                                    tension: 0.1,
-                                    fill: true,
-                                    pointRadius: 0,
-                                    pointHoverRadius: 4
-                                }]
+                                labels: result.equity_curve.map(d => d.time),
+                                datasets: [{ label: 'Equity', data: result.equity_curve.map(d => d.value), borderColor: '#3b82f6', backgroundColor: 'rgba(59, 130, 246, 0.1)', fill: true, tension: 0.1, pointRadius: 0 }]
                             },
-                            options: {
-                                responsive: true,
-                                maintainAspectRatio: false,
-                                interaction: { mode: 'index', intersect: false },
-                                scales: {
-                                    x: { grid: { color: '#374151' }, ticks: { color: '#9ca3af' } },
-                                    y: { grid: { color: '#374151' }, ticks: { color: '#9ca3af' } }
-                                },
-                                plugins: { tooltip: { mode: 'index', intersect: false } }
-                            }
-                        });
-                    } else {
-                        const labels = result.details.map(r => r.symbol);
-                        const data = result.details.map(r => r.roi);
-                        const bgColors = data.map(v => v >= 0 ? 'rgba(34, 197, 94, 0.6)' : 'rgba(239, 68, 68, 0.6)');
-                        const borderColors = data.map(v => v >= 0 ? '#16a34a' : '#dc2626');
-
-                        chartInstance.current = new Chart(ctx, {
-                            type: 'bar',
-                            data: {
-                                labels: labels,
-                                datasets: [{
-                                    label: '수익률 (ROI %)',
-                                    data: data,
-                                    backgroundColor: bgColors,
-                                    borderColor: borderColors,
-                                    borderWidth: 1
-                                }]
-                            },
-                            options: {
-                                responsive: true,
-                                maintainAspectRatio: false,
-                                scales: {
-                                    x: { grid: { color: '#374151' }, ticks: { color: '#9ca3af' } },
-                                    y: { grid: { color: '#374151' }, ticks: { color: '#9ca3af' } }
-                                }
-                            }
+                            options: { responsive: true, maintainAspectRatio: false, scales: { x: { display: false }, y: { grid: { color: '#374151' } } } }
                         });
                     }
                 }
             }, [result]);
 
+            const InputGroup = ({ label, name, val, step="1" }) => (
+                <div>
+                    <label className="text-[10px] text-gray-400">{label}</label>
+                    <input type="number" step={step} name={name} value={val} onChange={handleCustomChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600 text-sm" />
+                </div>
+            );
+
             return (
-                <div className="space-y-6 animate-fade-in">
-                    <div className="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700">
-                        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
-                            <div>
-                                <label className="block text-sm text-gray-400 mb-2">테스트 코인</label>
-                                <select name="symbol" className="w-full bg-gray-900 text-white p-2.5 rounded-lg border border-gray-600 focus:border-blue-500 outline-none" 
-                                        value={params.symbol} onChange={handleChange}>
-                                    {symbols.map(s => <option key={s} value={s}>{s}</option>)}
-                                </select>
+                <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 animate-fade-in pb-24 md:pb-0 md:h-[calc(100vh-200px)] md:min-h-[800px]">
+                    {/* [Left] Config Panel */}
+                    <div className="xl:col-span-4 bg-gray-800 p-5 rounded-xl shadow-lg border border-gray-700 flex flex-col overflow-y-auto custom-scroll">
+                        <h2 className="text-lg font-bold text-white mb-4 flex items-center gap-2"><i className="ph ph-flask text-purple-400"></i> 전략 설정</h2>
+                        <div className="space-y-4 flex-1">
+                            <div><label className="block text-xs font-bold text-gray-500 mb-1">SYMBOL</label><input type="text" className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600" value={params.symbol} onChange={(e)=>setParams({...params, symbol: e.target.value})} /></div>
+                            <div><label className="block text-xs font-bold text-gray-500 mb-1">INITIAL CASH ($)</label><input type="number" className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600" value={params.initial_cash} onChange={(e)=>setParams({...params, initial_cash: e.target.value})} /></div>
+                            <div className="grid grid-cols-2 gap-3">
+                                <div><label className="block text-xs text-gray-500 mb-1">TRAIN DAYS</label><input type="number" className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" value={params.train_days} onChange={(e)=>setParams({...params, train_days: e.target.value})} /></div>
+                                <div><label className="block text-xs text-gray-500 mb-1">TEST DAYS</label><input type="number" className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" value={params.test_days} onChange={(e)=>setParams({...params, test_days: e.target.value})} /></div>
                             </div>
-                            <div>
-                                <label className="block text-sm text-gray-400 mb-2">초기 자본금 ($)</label>
-                                <input type="number" name="initial_cash" className="w-full bg-gray-900 text-white p-2.5 rounded-lg border border-gray-600 focus:border-blue-500 outline-none"
-                                       value={params.initial_cash} onChange={handleChange} />
-                            </div>
-                            <div>
-                                <label className="block text-sm text-gray-400 mb-2">학습 기간 (일)</label>
-                                <input type="number" name="train_days" className="w-full bg-gray-900 text-white p-2.5 rounded-lg border border-gray-600 focus:border-blue-500 outline-none"
-                                       value={params.train_days} onChange={handleChange} />
-                            </div>
-                            <div>
-                                <label className="block text-sm text-gray-400 mb-2">검증 기간 (일)</label>
-                                <input type="number" name="test_days" className="w-full bg-gray-900 text-white p-2.5 rounded-lg border border-gray-600 focus:border-blue-500 outline-none"
-                                       value={params.test_days} onChange={handleChange} />
-                            </div>
+                            <details className="group bg-gray-900/30 rounded-lg border border-gray-700 open:bg-gray-900/50 transition"><summary className="p-3 cursor-pointer font-bold text-sm text-green-400 flex justify-between items-center">Money Management <i className="ph-bold ph-caret-down group-open:rotate-180 transition"></i></summary><div className="p-3 pt-0 grid grid-cols-2 gap-3 border-t border-gray-700/50 mt-2"><InputGroup label="LEVERAGE" name="LEVERAGE" val={params.custom_settings.LEVERAGE} /><InputGroup label="MAX POS" name="MAX_OPEN_POSITIONS" val={params.custom_settings.MAX_OPEN_POSITIONS} /></div></details>
+                            <details className="group bg-gray-900/30 rounded-lg border border-gray-700 open:bg-gray-900/50 transition"><summary className="p-3 cursor-pointer font-bold text-sm text-blue-400 flex justify-between items-center">RSI Parameters <i className="ph-bold ph-caret-down group-open:rotate-180 transition"></i></summary><div className="p-3 pt-0 grid grid-cols-2 gap-3 border-t border-gray-700/50 mt-2"><InputGroup label="BUY LOWER" name="RSI_BUY_LOWER" val={params.custom_settings.RSI_BUY_LOWER} /><InputGroup label="BUY UPPER" name="RSI_BUY_UPPER" val={params.custom_settings.RSI_BUY_UPPER} /><InputGroup label="SELL LOWER" name="RSI_SELL_LOWER" val={params.custom_settings.RSI_SELL_LOWER} /><InputGroup label="SELL UPPER" name="RSI_SELL_UPPER" val={params.custom_settings.RSI_SELL_UPPER} /></div></details>
+                            <details className="group bg-gray-900/30 rounded-lg border border-gray-700 open:bg-gray-900/50 transition"><summary className="p-3 cursor-pointer font-bold text-sm text-red-400 flex justify-between items-center">Risk (ATR) <i className="ph-bold ph-caret-down group-open:rotate-180 transition"></i></summary><div className="p-3 pt-0 grid grid-cols-3 gap-3 border-t border-gray-700/50 mt-2"><InputGroup label="STOP" name="STOP_LOSS_ATR" val={params.custom_settings.STOP_LOSS_ATR} step="0.1" /><InputGroup label="TRIGGER" name="TRAIL_TRIGGER_ATR" val={params.custom_settings.TRAIL_TRIGGER_ATR} step="0.1" /><InputGroup label="DIST" name="TRAIL_DIST_ATR" val={params.custom_settings.TRAIL_DIST_ATR} step="0.1" /></div></details>
                         </div>
-                        
-                        <div className="flex flex-wrap justify-between items-center gap-4 border-t border-gray-700 pt-4">
-                            <label className="flex items-center gap-2 text-gray-300 cursor-pointer hover:text-white">
-                                <input type="checkbox" name="update_data" checked={params.update_data} onChange={handleChange} className="w-4 h-4 rounded bg-gray-900 border-gray-600 accent-blue-500" />
-                                <span>실행 전 데이터 최신화 (시간 소요됨)</span>
-                            </label>
-                            
-                            <div className="flex gap-3">
-                                <button onClick={() => runAnalysis(false)} disabled={loading} 
-                                    className={`px-6 py-2.5 rounded-lg font-bold text-white transition flex items-center gap-2 shadow-lg ${loading ? 'bg-gray-700 cursor-not-allowed text-gray-400' : 'bg-blue-600 hover:bg-blue-500'}`}>
-                                    {loading ? <i className="ph ph-spinner animate-spin"></i> : <i className="ph ph-play-circle"></i>}
-                                    단일 실행
-                                </button>
-                                <button onClick={() => runAnalysis(true)} disabled={loading} 
-                                    className={`px-6 py-2.5 rounded-lg font-bold text-white transition flex items-center gap-2 shadow-lg ${loading ? 'bg-gray-700 cursor-not-allowed text-gray-400' : 'bg-purple-600 hover:bg-purple-500'}`}>
-                                    {loading ? <i className="ph ph-spinner animate-spin"></i> : <i className="ph ph-playlist"></i>}
-                                    전체 포트폴리오 실행
-                                </button>
+                        <div className="mt-6 pt-4 border-t border-gray-700 space-y-3">
+                            <div className="flex gap-4 text-xs text-gray-400">
+                                <label className="flex items-center gap-2"><input type="checkbox" checked={params.update_data} onChange={(e)=>setParams({...params, update_data: e.target.checked})} /> <span>데이터 갱신</span></label>
+                                <label className="flex items-center gap-2"><input type="checkbox" checked={params.is_batch} onChange={(e)=>setParams({...params, is_batch: e.target.checked})} /> <span>일괄 테스트</span></label>
+                            </div>
+                            <button onClick={runExperiment} disabled={loading} className={`w-full py-3 rounded-lg font-bold text-white shadow-lg flex justify-center items-center gap-2 ${loading?'bg-gray-700':'bg-purple-600 hover:bg-purple-500'}`}>{loading ? <i className="ph ph-spinner animate-spin text-xl"></i> : <i className="ph ph-play text-xl"></i>} 실행</button>
+                        </div>
+                    </div>
+
+                    {/* [Right] Results */}
+                    <div className="xl:col-span-8 space-y-4 md:space-y-6 flex flex-col h-full overflow-hidden">
+                        {/* Chart */}
+                        <div className="bg-gray-800 p-4 md:p-6 rounded-xl shadow-lg border border-gray-700 flex-none h-[300px] md:h-[400px] flex flex-col">
+                             <h3 className="text-base md:text-lg font-semibold text-gray-300 mb-2 flex items-center gap-2"><i className="ph ph-trend-up text-blue-400"></i> 결과</h3>
+                            <div className="flex-1 relative bg-gray-900/50 rounded-lg border border-gray-700/50">
+                                {result ? <canvas ref={chartRef}></canvas> : <div className="flex items-center justify-center h-full text-gray-600 text-sm">실행 결과 대기 중...</div>}
+                            </div>
+                            {result && (<div className="mt-3 flex gap-3 text-xs md:text-sm overflow-x-auto whitespace-nowrap scrollbar-hide"><span className="bg-gray-900 px-2 py-1 rounded border border-gray-700">ROI <b className={result.roi>=0||result.portfolio_roi>=0?"text-green-400":"text-red-400"}>{result.type==='batch'?result.portfolio_roi:result.roi}%</b></span><span className="bg-gray-900 px-2 py-1 rounded border border-gray-700">MDD <b className="text-red-400">-{result.type==='batch'?result.avg_mdd:result.mdd}%</b></span></div>)}
+                        </div>
+
+                        {/* History List */}
+                        <div className="bg-gray-800 p-4 md:p-6 rounded-xl shadow-lg border border-gray-700 flex-1 flex flex-col overflow-hidden">
+                            <h3 className="text-base md:text-lg font-semibold text-gray-300 mb-4"><i className="ph ph-clock-counter-clockwise text-yellow-400"></i> 이력</h3>
+                            <div className="flex-1 overflow-auto custom-scroll bg-gray-900 rounded-lg border border-gray-700 p-2">
+                                
+                                {/* [Mobile] Card View with Modal Trigger */}
+                                <div className="md:hidden space-y-2">
+                                    {history.map(row => (
+                                        <div key={row.id} className="bg-gray-800 p-3 rounded border border-gray-700 flex justify-between items-center">
+                                            <div>
+                                                <div className="font-bold text-white text-sm">{row.symbol}</div>
+                                                <div className="text-[10px] text-gray-500">{row.timestamp.substring(5,16)}</div>
+                                            </div>
+                                            <div className="flex items-center gap-3">
+                                                <div className="text-right mr-2">
+                                                    <div className={`font-bold text-sm ${row.roi>=0?'text-green-400':'text-red-400'}`}>{row.roi}%</div>
+                                                </div>
+                                                
+                                                {/* Modal Trigger Button */}
+                                                <button onClick={() => setMobileModalData(row.params)} className="text-lg text-blue-400">
+                                                    <i className="ph-bold ph-info"></i>
+                                                </button>
+
+                                                <button onClick={()=>deleteRecord(row.id)} className="text-red-400"><i className="ph-bold ph-trash text-lg"></i></button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                {/* [Desktop] Table View with Click-Toggle Tooltip */}
+                                <table className="hidden md:table w-full text-xs text-left text-gray-400">
+                                    <thead className="uppercase bg-gray-800 sticky top-0">
+                                        <tr><th className="p-3">Time</th><th className="p-3">Symbol</th><th className="p-3">ROI</th><th className="p-3">MDD</th><th className="p-3 text-center">Settings</th><th className="p-3 text-right">Actions</th></tr>
+                                    </thead>
+                                    <tbody>
+                                        {history.map(row => (
+                                            <tr key={row.id} className="hover:bg-gray-800/50 border-b border-gray-800">
+                                                <td className="p-3">{row.timestamp.substring(5,16)}</td>
+                                                <td className="p-3 font-bold text-white">{row.symbol}</td>
+                                                <td className={`p-3 font-bold ${row.roi>=0?'text-green-400':'text-red-400'}`}>{row.roi}%</td>
+                                                <td className="p-3 text-red-400">-{row.mdd}%</td>
+                                                
+                                                {/* Tooltip Logic */}
+                                                <td className="p-3 text-center relative">
+                                                    <button onClick={() => toggleTooltip(row.id)} className={`text-lg transition ${activeTooltipId===row.id ? 'text-white':'text-gray-500 hover:text-blue-400'}`}>
+                                                        <i className="ph-bold ph-info"></i>
+                                                    </button>
+                                                    {activeTooltipId === row.id && (
+                                                        <div className="tooltip-box">
+                                                            <div className="flex justify-between items-center mb-2 border-b border-gray-600 pb-1">
+                                                                <span className="font-bold text-xs text-blue-400">Configuration</span>
+                                                                <button onClick={(e) => {e.stopPropagation(); toggleTooltip(null);}} className="text-gray-400 hover:text-white"><i className="ph-bold ph-x"></i></button>
+                                                            </div>
+                                                            {formatParams(row.params)}
+                                                        </div>
+                                                    )}
+                                                </td>
+
+                                                <td className="p-3 text-right space-x-2">
+                                                    {row.csv_path && <button onClick={()=>window.location.href=`/api/backtest/download/${row.id}`} className="text-blue-400 hover:text-white"><i className="ph-bold ph-download-simple"></i></button>}
+                                                    <button onClick={()=>deleteRecord(row.id)} className="text-gray-500 hover:text-red-400"><i className="ph-bold ph-trash"></i></button>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
                             </div>
                         </div>
                     </div>
 
-                    {result && (
-                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-fade-in">
-                            <div className="lg:col-span-2 bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700 flex flex-col">
-                                <h3 className="text-lg font-semibold text-gray-300 mb-4 flex items-center gap-2">
-                                    <i className="ph ph-trend-up text-blue-400"></i> {result.type === 'single' ? '수익 곡선 (Equity Curve)' : '코인별 수익률 (ROI)'}
-                                </h3>
-                                <div className="relative flex-1 min-h-[300px]">
-                                    <canvas ref={chartRef}></canvas>
+                    {/* [Mobile Only] Global Modal */}
+                    {mobileModalData && (
+                        <div className="modal-overlay" onClick={() => setMobileModalData(null)}>
+                            <div className="modal-content" onClick={e => e.stopPropagation()}>
+                                <div className="modal-header">
+                                    <span>Configuration</span>
+                                    <button onClick={() => setMobileModalData(null)} className="text-gray-400 hover:text-white"><i className="ph-bold ph-x"></i></button>
                                 </div>
-                            </div>
-
-                            <div className="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700 flex flex-col h-[600px]">
-                                <h3 className="text-lg font-semibold text-gray-300 mb-4 flex items-center gap-2">
-                                    <i className="ph ph-notebook text-yellow-400"></i> 결과 리포트
-                                </h3>
-                                <div className="bg-gray-900 rounded-lg p-4 mb-4 border border-gray-700 space-y-3 shadow-inner">
-                                    {result.type === 'single' ? (
-                                        <>
-                                            <div className="flex justify-between items-center border-b border-gray-800 pb-2">
-                                                <span className="text-gray-400 text-sm">심볼</span>
-                                                <span className="font-bold text-white">{result.symbol}</span>
-                                            </div>
-                                            <div className="flex justify-between items-center border-b border-gray-800 pb-2">
-                                                <span className="text-gray-400 text-sm">최종 잔고</span>
-                                                <span className="font-bold text-white tracking-wide">${result.final_balance.toLocaleString()}</span>
-                                            </div>
-                                            <div className="flex justify-between items-center border-b border-gray-800 pb-2">
-                                                <span className="text-gray-400 text-sm">수익률 (ROI)</span>
-                                                <span className={`font-bold ${result.roi >= 0 ? 'text-green-400' : 'text-red-400'}`}>{result.roi > 0 ? '+' : ''}{result.roi}%</span>
-                                            </div>
-                                            <div className="flex justify-between items-center">
-                                                <span className="text-gray-400 text-sm">총 거래</span>
-                                                <span className="font-bold text-white">{result.trade_count}회</span>
-                                            </div>
-                                        </>
-                                    ) : (
-                                        <>
-                                            <div className="flex justify-between items-center border-b border-gray-800 pb-2">
-                                                <span className="text-gray-400 text-sm">평균 수익률</span>
-                                                <span className={`font-bold ${result.avg_roi >= 0 ? 'text-green-400' : 'text-red-400'}`}>{result.avg_roi > 0 ? '+' : ''}{result.avg_roi}%</span>
-                                            </div>
-                                            <div className="flex justify-between items-center border-b border-gray-800 pb-2">
-                                                <span className="text-gray-400 text-sm">포트폴리오 ROI</span>
-                                                <span className={`font-bold ${result.portfolio_roi >= 0 ? 'text-green-400' : 'text-red-400'}`}>{result.portfolio_roi > 0 ? '+' : ''}{result.portfolio_roi}%</span>
-                                            </div>
-                                            <div className="flex justify-between items-center">
-                                                <span className="text-gray-400 text-sm">테스트 코인</span>
-                                                <span className="font-bold text-white">{result.details.length}개</span>
-                                            </div>
-                                        </>
-                                    )}
+                                <div className="modal-body">
+                                    {formatParams(mobileModalData)}
                                 </div>
-
-                                <div className="flex-1 overflow-auto bg-gray-900 rounded-lg border border-gray-700 scrollbar-hide relative">
-                                    <table className="w-full text-xs text-gray-400">
-                                        <thead className="bg-gray-800 sticky top-0 text-gray-300 font-semibold z-10 shadow-md">
-                                            <tr>
-                                                {result.type === 'single' ? (
-                                                    <>
-                                                        <th className="p-3 text-left">Side</th>
-                                                        <th className="p-3 text-left">Time (In/Out)</th>
-                                                        <th className="p-3 text-left">Price (In/Out)</th>
-                                                        <th className="p-3 text-left">Size</th>
-                                                        <th className="p-3 text-left">PnL (ROI)</th>
-                                                        <th className="p-3 text-right">Dur.</th>
-                                                    </>
-                                                ) : (
-                                                    <>
-                                                        <th className="p-3 text-left">Symbol</th>
-                                                        <th className="p-3 text-right">Balance</th>
-                                                        <th className="p-3 text-right">ROI</th>
-                                                    </>
-                                                )}
-                                            </tr>
-                                        </thead>
-                                        <tbody className="divide-y divide-gray-800">
-                                            {result.type === 'single' ? 
-                                                result.trades.map((t, i) => (
-                                                    <tr key={i} className="hover:bg-gray-800/50 transition-colors">
-                                                        <td className="p-3 align-top">
-                                                            <span className={`px-2 py-1 rounded-md font-bold text-[10px] border tracking-wider ${
-                                                                t.Type === 'Long' 
-                                                                ? 'bg-green-900/30 text-green-400 border-green-800' 
-                                                                : 'bg-red-900/30 text-red-400 border-red-800'
-                                                            }`}>
-                                                                {t.Type.toUpperCase()}
-                                                            </span>
-                                                        </td>
-                                                        <td className="p-3 whitespace-nowrap align-top">
-                                                            <div className="text-gray-300 font-medium">{t.Entry_Date}</div>
-                                                            <div className="text-gray-500 text-[10px] flex items-center gap-1">
-                                                                <i className="ph-bold ph-arrow-elbow-down-right"></i> {t.Exit_Date}
-                                                            </div>
-                                                        </td>
-                                                        <td className="p-3 whitespace-nowrap align-top">
-                                                            <div className="text-gray-300">${t.Entry_Price.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</div>
-                                                            <div className="text-gray-500 text-[10px] flex items-center gap-1">
-                                                                <i className="ph-bold ph-arrow-elbow-down-right"></i> ${t.Exit_Price.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}
-                                                            </div>
-                                                        </td>
-                                                        <td className="p-3 align-top font-mono text-gray-400">{Number(t.Size).toFixed(6)}</td>
-                                                        <td className="p-3 whitespace-nowrap align-top">
-                                                            <div className={`font-bold text-sm ${t.PnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                                                {t.PnL >= 0 ? '+' : ''}${t.PnL.toFixed(2)}
-                                                            </div>
-                                                            <div className={`text-[10px] font-medium ${t.ROI >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                                                ({t.ROI.toFixed(2)}%)
-                                                            </div>
-                                                        </td>
-                                                        <td className="p-3 text-right align-top text-gray-500">
-                                                            {t.Duration}
-                                                        </td>
-                                                    </tr>
-                                                )) : 
-                                                result.details.map((r, i) => (
-                                                    <tr key={i} className="hover:bg-gray-800/50 transition-colors">
-                                                        <td className="p-3 font-medium text-white">{r.symbol}</td>
-                                                        <td className="p-3 text-right font-mono text-gray-300">${r.final_balance.toLocaleString()}</td>
-                                                        <td className={`p-3 text-right font-bold ${r.roi >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                                            {r.roi > 0 ? '+' : ''}{r.roi}%
-                                                        </td>
-                                                    </tr>
-                                                ))
-                                            }
-                                        </tbody>
-                                    </table>
+                                <div className="modal-footer">
+                                    <button onClick={() => setMobileModalData(null)} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-bold">Close</button>
                                 </div>
                             </div>
                         </div>
@@ -613,201 +558,55 @@
         };
 
         // ------------------------------------------------------------------
-        // [Component] Settings Tab (Modified for Edit & Persistence)
+        // [Component] Settings Tab
         // ------------------------------------------------------------------
-        const Settings = ({ config, status }) => {
+        const Settings = ({ config }) => {
             const [formData, setFormData] = useState({});
-            const [balance, setBalance] = useState(10000);
             const [loading, setLoading] = useState(false);
-            const [isInitialized, setIsInitialized] = useState(false);
 
             useEffect(() => {
                 if (config) {
                     const editable = { ...config };
-                    if (Array.isArray(editable.SYMBOLS)) {
-                        editable.SYMBOLS = editable.SYMBOLS.join(", ");
-                    }
+                    if (Array.isArray(editable.SYMBOLS)) editable.SYMBOLS = editable.SYMBOLS.join(", ");
                     setFormData(editable);
                 }
             }, [config]);
-            
-            useEffect(() => {
-                if (!isInitialized && status && status.paper_balance !== undefined) {
-                    setBalance(status.paper_balance);
-                    setIsInitialized(true);
-                }
-            }, [status, isInitialized]);
 
             const handleChange = (e) => {
                 const { name, value, type, checked } = e.target;
-                setFormData(prev => ({
-                    ...prev,
-                    [name]: type === 'checkbox' ? checked : value
-                }));
+                setFormData(prev => ({ ...prev, [name]: type === 'checkbox' ? checked : value }));
             };
 
             const handleSave = async () => {
-                if (!confirm("설정을 저장하시겠습니까?\n실시간으로 반영됩니다.")) return;
+                if (!confirm("설정을 봇에 적용하시겠습니까?")) return;
                 setLoading(true);
-                try {
-                    await axios.post('/api/config/update', { settings: formData });
-                    alert("✅ 설정이 성공적으로 저장되었습니다.");
-                } catch (e) {
-                    alert("❌ 저장 실패: " + e.message);
-                } finally {
-                    setLoading(false);
-                }
-            };
-
-            const handleDefaultReset = async () => {
-                if (!confirm("⚠️ 정말로 모든 설정을 '기본값(Default)'으로 되돌리시겠습니까?")) return;
-                setLoading(true);
-                try {
-                    const res = await axios.post('/api/config/reset');
-                    let newConf = res.data.config;
-                    if (Array.isArray(newConf.SYMBOLS)) {
-                        newConf.SYMBOLS = newConf.SYMBOLS.join(", ");
-                    }
-                    setFormData(newConf);
-                    alert("♻️ 설정이 초기화되었습니다.");
-                } catch (e) {
-                    alert("❌ 초기화 실패: " + e.message);
-                } finally {
-                    setLoading(false);
-                }
-            };
-
-            const handleBalanceReset = async () => {
-                if (!confirm(`모의투자 잔고를 $${Number(balance).toLocaleString()}로 초기화하시겠습니까?\n이 작업은 되돌릴 수 없습니다.`)) return;
-                setLoading(true);
-                try {
-                    await axios.post('/api/reset_balance', { amount: Number(balance) });
-                    alert("✅ 모의투자 잔고가 초기화되었습니다.");
-                    setIsInitialized(false); 
-                } catch(e) { alert("❌ 오류 발생: " + e.message); }
-                finally { setLoading(false); }
+                try { await axios.post('/api/config/update', { settings: formData }); alert("저장 완료"); } catch (e) { alert("저장 실패"); } finally { setLoading(false); }
             };
 
             return (
-                <div className="space-y-6 animate-fade-in pb-10">
-                    {/* 1. 모의투자 잔고 관리 */}
-                    <div className="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700">
-                        <h2 className="text-lg font-bold text-white mb-4 border-b border-gray-700 pb-2 flex items-center gap-2">
-                            <i className="ph ph-wallet text-blue-400"></i> 모의투자 자산 관리
-                        </h2>
-                        <div className="flex gap-4 items-end">
-                            <div className="flex-1">
-                                <label className="block text-sm text-gray-400 mb-1">초기 자본금 ($)</label>
-                                <input type="number" className="w-full bg-gray-900 text-white p-2.5 rounded border border-gray-600 focus:border-blue-500 outline-none" 
-                                       value={balance} onChange={(e)=>setBalance(e.target.value)} />
-                            </div>
-                            <button onClick={handleBalanceReset} disabled={loading} className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded font-bold transition">
-                                잔고 초기화
-                            </button>
-                        </div>
-                        <p className="text-xs text-gray-500 mt-2">* 모의매매(PAPER) 모드의 잔고를 강제로 설정합니다.</p>
+                <div className="bg-gray-800 p-6 md:p-8 rounded-xl shadow-lg border border-gray-700 animate-fade-in max-w-4xl mx-auto pb-24 md:pb-8">
+                    <div className="flex justify-between items-center mb-6 border-b border-gray-700 pb-4">
+                        <h2 className="text-lg md:text-xl font-bold text-white"><i className="ph ph-gear"></i> 시스템 설정</h2>
+                        <button onClick={handleSave} disabled={loading} className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg font-bold shadow text-sm">{loading ? '저장 중...' : '저장'}</button>
                     </div>
-
-                    {/* 2. 봇 전략 설정 폼 */}
-                    <div className="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700">
-                        <div className="flex justify-between items-center mb-6 border-b border-gray-700 pb-3">
-                            <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                                <i className="ph ph-sliders text-yellow-400"></i> 전략 및 시스템 설정
-                            </h2>
-                            <div className="flex gap-2">
-                                <button onClick={handleDefaultReset} disabled={loading} className="px-3 py-1.5 bg-gray-600 hover:bg-gray-500 text-xs text-white rounded transition">
-                                    기본값 복원
-                                </button>
-                                <button onClick={handleSave} disabled={loading} className="px-4 py-1.5 bg-green-600 hover:bg-green-500 text-sm font-bold text-white rounded shadow-lg transition flex items-center gap-1">
-                                    {loading ? <i className="ph ph-spinner animate-spin"></i> : <i className="ph ph-floppy-disk"></i>}
-                                    설정 저장
-                                </button>
-                            </div>
-                        </div>
-
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            {/* 타겟 코인 */}
-                            <div className="md:col-span-2">
-                                <label className="block text-sm text-blue-300 mb-1">거래 대상 코인 (쉼표로 구분)</label>
-                                <input type="text" name="SYMBOLS" value={formData.SYMBOLS || ''} onChange={handleChange} 
-                                    className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600 focus:border-blue-500 font-mono text-sm outline-none" />
-                                <p className="text-xs text-gray-500 mt-1">예: BTC/USDT, ETH/USDT, XRP/USDT</p>
-                            </div>
-
-                            {/* 레버리지 & 포트폴리오 */}
-                            <div>
-                                <label className="block text-sm text-gray-400 mb-1">레버리지 (Leverage)</label>
-                                <input type="number" name="LEVERAGE" value={formData.LEVERAGE || 1} onChange={handleChange}
-                                    className="w-full bg-gray-900 text-white p-2.5 rounded border border-gray-600 outline-none" />
-                            </div>
-                            <div>
-                                <label className="block text-sm text-gray-400 mb-1">최대 동시 포지션 (Max Slots)</label>
-                                <input type="number" name="MAX_OPEN_POSITIONS" value={formData.MAX_OPEN_POSITIONS || 3} onChange={handleChange}
-                                    className="w-full bg-gray-900 text-white p-2.5 rounded border border-gray-600 outline-none" />
-                            </div>
-
-                            {/* RSI 전략 설정 */}
-                            <div className="md:col-span-2 border-t border-gray-700 pt-4 mt-2">
-                                <h3 className="text-sm font-bold text-purple-400 mb-3">RSI 진입 조건</h3>
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div>
-                                        <label className="block text-xs text-gray-500">Long 진입 하한 (Buy Lower)</label>
-                                        <input type="number" name="RSI_BUY_LOWER" value={formData.RSI_BUY_LOWER || 30} onChange={handleChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" />
-                                    </div>
-                                    <div>
-                                        <label className="block text-xs text-gray-500">Long 진입 상한 (Buy Upper)</label>
-                                        <input type="number" name="RSI_BUY_UPPER" value={formData.RSI_BUY_UPPER || 65} onChange={handleChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" />
-                                    </div>
-                                    <div>
-                                        <label className="block text-xs text-gray-500">Short 진입 하한 (Sell Lower)</label>
-                                        <input type="number" name="RSI_SELL_LOWER" value={formData.RSI_SELL_LOWER || 35} onChange={handleChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" />
-                                    </div>
-                                    <div>
-                                        <label className="block text-xs text-gray-500">Short 진입 상한 (Sell Upper)</label>
-                                        <input type="number" name="RSI_SELL_UPPER" value={formData.RSI_SELL_UPPER || 70} onChange={handleChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" />
-                                    </div>
-                                </div>
-                            </div>
-
-                            {/* 손절 및 트레일링 */}
-                            <div className="md:col-span-2 border-t border-gray-700 pt-4">
-                                <h3 className="text-sm font-bold text-red-400 mb-3">손절 및 익절 (ATR 기반)</h3>
-                                <div className="grid grid-cols-3 gap-4">
-                                    <div>
-                                        <label className="block text-xs text-gray-500">손절 거리 (Stop Loss ATR)</label>
-                                        <input type="number" step="0.1" name="STOP_LOSS_ATR" value={formData.STOP_LOSS_ATR || 2.0} onChange={handleChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" />
-                                    </div>
-                                    <div>
-                                        <label className="block text-xs text-gray-500">트레일링 발동 (Trigger)</label>
-                                        <input type="number" step="0.1" name="TRAIL_TRIGGER_ATR" value={formData.TRAIL_TRIGGER_ATR || 2.0} onChange={handleChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" />
-                                    </div>
-                                    <div>
-                                        <label className="block text-xs text-gray-500">트레일링 간격 (Dist)</label>
-                                        <input type="number" step="0.1" name="TRAIL_DIST_ATR" value={formData.TRAIL_DIST_ATR || 2.0} onChange={handleChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" />
-                                    </div>
-                                </div>
-                            </div>
-                            
-                            {/* 기타 설정 (Boolean) */}
-                             <div className="md:col-span-2 border-t border-gray-700 pt-4">
-                                <label className="flex items-center gap-2 text-gray-300 cursor-pointer">
-                                    <input type="checkbox" name="FORCE_MARKET_ORDER_ON_TIMEOUT" checked={formData.FORCE_MARKET_ORDER_ON_TIMEOUT || false} onChange={handleChange} className="w-4 h-4 rounded bg-gray-900 border-gray-600 accent-blue-500" />
-                                    <span className="text-sm">지정가 주문 시간 초과 시 시장가로 전환</span>
-                                </label>
-                            </div>
-                        </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="md:col-span-2"><label className="text-xs text-blue-300 block mb-1">Symbols</label><input type="text" name="SYMBOLS" value={formData.SYMBOLS || ''} onChange={handleChange} className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600 text-sm font-mono" /></div>
+                        <div><label className="text-xs text-gray-400 block mb-1">Leverage</label><input type="number" name="LEVERAGE" value={formData.LEVERAGE || 1} onChange={handleChange} className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600" /></div>
+                        <div><label className="text-xs text-gray-400 block mb-1">Max Positions</label><input type="number" name="MAX_OPEN_POSITIONS" value={formData.MAX_OPEN_POSITIONS || 3} onChange={handleChange} className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600" /></div>
+                        {['RSI_BUY_LOWER','RSI_BUY_UPPER','RSI_SELL_LOWER','RSI_SELL_UPPER'].map(f => (
+                            <div key={f}><label className="text-xs text-gray-500 block mb-1">{f}</label><input type="number" name={f} value={formData[f] || 0} onChange={handleChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" /></div>
+                        ))}
                     </div>
                 </div>
             );
         };
 
         // ------------------------------------------------------------------
-        // [Main App]
+        // [Main App] with Responsive Navigation
         // ------------------------------------------------------------------
         function App() {
             const [status, setStatus] = useState(null);
             const [logs, setLogs] = useState([]);
-            const [wsConnected, setWsConnected] = useState(false);
             const [activeTab, setActiveTab] = useState("dashboard");
             const [config, setConfig] = useState({});
 
@@ -817,51 +616,64 @@
             useEffect(() => { fetchStatus(); fetchConfig(); const i = setInterval(fetchStatus, 2000); return () => clearInterval(i); }, []);
 
             useEffect(() => {
-                const wsUrl = `${window.location.protocol==='https:'?'wss:':'ws:'}//${window.location.host}/ws/logs`;
-                let ws = new WebSocket(wsUrl);
-                ws.onopen = () => { setWsConnected(true); };
-                ws.onmessage = (e) => {
-                    if (e.data.startsWith("{")) { try{ setStatus(p=>({...p, ...JSON.parse(e.data)})); }catch(e){} } 
-                    else { setLogs(p=>[...p.slice(-99), {time: new Date().toLocaleTimeString(), msg: e.data.replace(/\[.*?\]/g,'').trim()}]); }
-                };
+                const ws = new WebSocket(`${window.location.protocol==='https:'?'wss:':'ws:'}//${window.location.host}/ws/logs`);
+                ws.onmessage = (e) => { if (!e.data.startsWith("{")) setLogs(p=>[...p.slice(-99), {time: new Date().toLocaleTimeString(), msg: e.data.replace(/\[.*?\]/g,'').trim()}]); };
                 return () => ws.close();
             }, []);
 
-            const sendCommand = async (cmd, val) => {
-                if(!confirm(`'${cmd}' 명령을 실행하시겠습니까?`)) return;
-                try{ await axios.post('/api/control', {command:cmd, value:val}); alert("완료"); fetchStatus(); }catch(e){alert("실패");}
-            };
-            const forceClose = async (sym) => {
-                if(!confirm("청산하시겠습니까?")) return;
-                try{ await axios.post(`/api/trade/close/${encodeURIComponent(sym)}`); alert("완료"); }catch(e){alert("실패");}
-            };
+            const sendCommand = async (cmd, val) => { if(confirm("실행하시겠습니까?")) try{ await axios.post('/api/control', {command:cmd, value:val}); fetchStatus(); }catch(e){} };
+            const forceClose = async (sym) => { if(confirm("청산하시겠습니까?")) try{ await axios.post(`/api/trade/close/${encodeURIComponent(sym)}`); }catch(e){} };
 
-            if (!status) return <div className="flex h-screen items-center justify-center bg-gray-900 text-white flex-col gap-4"><div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>Loading System...</div>;
+            // Mobile Bottom Nav Items
+            const navItems = [
+                { id: 'dashboard', icon: 'ph-house', label: '홈' },
+                { id: 'history', icon: 'ph-chart-bar', label: '기록' },
+                { id: 'lab', icon: 'ph-flask', label: '실험' },
+                { id: 'settings', icon: 'ph-gear', label: '설정' },
+            ];
 
             return (
-                <div className="max-w-7xl mx-auto p-4 pb-20 font-sans">
-                    <header className="flex flex-col md:flex-row justify-between items-center bg-gray-800 p-5 rounded-xl shadow-xl border border-gray-700 gap-4 mb-6">
-                        <div className="flex items-center gap-5 w-full md:w-auto">
-                            <div className="p-3 bg-blue-600 rounded-lg shadow-lg"><i className="ph-fill ph-robot text-3xl text-white"></i></div>
-                            <div><h1 className="text-2xl font-bold text-white">QuantBot Hybrid V2</h1><div className="flex gap-4 text-xs text-gray-400 mt-1"><span className={wsConnected?'text-green-400':'text-red-400'}>● Server</span><span className={status.discord_active?'text-blue-400':'text-gray-500'}>● Discord</span></div></div>
+                <div className="max-w-[1600px] mx-auto p-4 font-sans">
+                    {/* Desktop Header */}
+                    <header className="hidden md:flex justify-between items-center bg-gray-800 p-4 rounded-xl shadow-xl border border-gray-700 gap-4 mb-6">
+                        <div className="flex items-center gap-4">
+                            <div className="p-2 bg-blue-600 rounded-lg"><i className="ph-fill ph-robot text-2xl text-white"></i></div>
+                            <div><h1 className="text-xl font-bold text-white">QuantBot V2</h1><span className="text-xs text-gray-400">Hybrid AI Trading System</span></div>
                         </div>
-                        <div className={`px-6 py-2 rounded-full font-bold text-sm border tracking-wider ${status.mode==='REAL'?'bg-red-500/10 text-red-400 border-red-500':'bg-green-500/10 text-green-400 border-green-500'}`}>{status.mode} MODE</div>
+                        <div className="flex bg-gray-900 rounded-lg p-1 border border-gray-600">
+                            {navItems.map(item => (
+                                <button key={item.id} onClick={() => setActiveTab(item.id)} className={`px-5 py-2 rounded-md text-sm font-bold transition capitalize ${activeTab===item.id?'bg-blue-600 text-white':'text-gray-400 hover:text-white'}`}>
+                                    {item.id === 'lab' ? 'Lab (Backtest)' : item.id}
+                                </button>
+                            ))}
+                        </div>
                     </header>
 
-                    <div className="flex border-b border-gray-700 mb-6 overflow-x-auto">
-                        {['dashboard', 'history', 'backtest', 'settings'].map(tab => (
-                            <button key={tab} onClick={() => { setActiveTab(tab); if(tab==='settings') fetchConfig(); }} 
-                                className={`px-6 py-3 font-medium text-sm capitalize transition-all whitespace-nowrap ${activeTab===tab?'tab-active':'tab-inactive'}`}>
-                                {tab}
-                            </button>
-                        ))}
-                    </div>
+                    {/* Mobile Header (Simple) */}
+                    <header className="md:hidden flex justify-between items-center mb-4 px-2">
+                        <div className="flex items-center gap-2">
+                            <div className="p-1.5 bg-blue-600 rounded"><i className="ph-fill ph-robot text-lg text-white"></i></div>
+                            <h1 className="text-lg font-bold text-white">QuantBot</h1>
+                        </div>
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full border ${status?.mode==='REAL'?'border-red-500 text-red-400':'border-green-500 text-green-400'}`}>{status?.mode || 'OFF'}</span>
+                    </header>
 
+                    {/* Main Content */}
                     <div className="min-h-[600px]">
                         {activeTab === 'dashboard' && <Dashboard status={status} logs={logs} sendCommand={sendCommand} forceClose={forceClose} />}
                         {activeTab === 'history' && <History />}
-                        {activeTab === 'backtest' && <Backtest symbols={config.SYMBOLS || []} />}
-                        {activeTab === 'settings' && <Settings config={config} status={status} />}
+                        {activeTab === 'lab' && <BacktestLab />}
+                        {activeTab === 'settings' && <Settings config={config} />}
+                    </div>
+
+                    {/* Mobile Bottom Navigation */}
+                    <div className="md:hidden fixed bottom-0 left-0 right-0 bg-gray-900/95 backdrop-blur border-t border-gray-800 flex justify-around items-center h-16 pb-safe z-50">
+                        {navItems.map(item => (
+                            <button key={item.id} onClick={() => setActiveTab(item.id)} className={`flex flex-col items-center justify-center w-full h-full ${activeTab===item.id?'text-blue-400':'text-gray-500'}`}>
+                                <i className={`ph ${activeTab===item.id ? item.icon+'-fill' : item.icon} text-2xl mb-0.5`}></i>
+                                <span className="text-[10px] font-medium">{item.label}</span>
+                            </button>
+                        ))}
                     </div>
                 </div>
             );
