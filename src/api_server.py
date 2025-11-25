@@ -38,6 +38,7 @@ class BacktestParams(BaseModel):
 
 class CustomBacktestParams(BacktestParams):
     custom_settings: Dict[str, Any] = {}
+    is_real_portfolio: bool = False # [NEW] 리얼 포트폴리오 모드 플래그 추가
 
 class BalanceReset(BaseModel):
     amount: float
@@ -182,8 +183,36 @@ async def run_custom_backtest(params: CustomBacktestParams):
     loop = asyncio.get_running_loop()
     
     try:
-        # 2. 실행 (CPU Bound 작업이므로 Executor에서 실행)
-        if params.is_batch:
+        # 2. 실행 분기 (CPU Bound 작업이므로 Executor에서 실행)
+        if params.is_real_portfolio:
+            # [NEW] 리얼 포트폴리오 모드 실행
+            result = await loop.run_in_executor(
+                None,
+                lambda: backtest_runner.run_real_portfolio_backtest(
+                    initial_cash=params.initial_cash,
+                    train_days=params.train_days,
+                    test_days=params.test_days,
+                    update_data=params.update_data,
+                    log_func=log_callback,
+                    dynamic_config=current_config
+                )
+            )
+            # 결과 저장
+            if "error" not in result:
+                save_data = {
+                    "symbol": "REAL_PF", # 구분자
+                    "params": current_config,
+                    "roi": result.get('portfolio_roi', 0),
+                    "mdd": result.get('avg_mdd', 0),
+                    "win_rate": 0, 
+                    "trade_count": result.get('trade_count', 0),
+                    "final_balance": result.get('final_balance', 0),
+                    "csv_path": result.get('csv_path', '')
+                }
+                await trader.save_backtest_result(save_data)
+
+        elif params.is_batch:
+            # 기존 단순 배치 실행
             result = await loop.run_in_executor(
                 None,
                 lambda: backtest_runner.run_batch_backtest(
@@ -198,7 +227,7 @@ async def run_custom_backtest(params: CustomBacktestParams):
             # 배치 결과 저장
             if "error" not in result:
                 save_data = {
-                    "symbol": "PORTFOLIO",
+                    "symbol": "BATCH_SUM",
                     "params": current_config,
                     "roi": result.get('portfolio_roi', 0),
                     "mdd": result.get('avg_mdd', 0),
@@ -210,6 +239,7 @@ async def run_custom_backtest(params: CustomBacktestParams):
                 await trader.save_backtest_result(save_data)
 
         else:
+            # 단일 코인 실행
             result = await loop.run_in_executor(
                 None,
                 lambda: backtest_runner.run_walk_forward(

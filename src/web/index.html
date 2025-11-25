@@ -327,24 +327,30 @@
         // ------------------------------------------------------------------
         const BacktestLab = () => {
             const [params, setParams] = useState({
-                symbol: "BTC/USDT", initial_cash: 10000, train_days: 365, test_days: 30, update_data: false, is_batch: false,
+                symbol: "BTC/USDT", 
+                initial_cash: 10000, 
+                train_days: 365, 
+                test_days: 30, 
+                update_data: false, 
+                is_batch: false, 
+                is_real_portfolio: false, // [NEW] 상태 추가
                 custom_settings: {
                     RSI_BUY_LOWER: 30, RSI_BUY_UPPER: 65, RSI_SELL_LOWER: 35, RSI_SELL_UPPER: 70,
                     STOP_LOSS_ATR: 2.0, TRAIL_TRIGGER_ATR: 2.0, TRAIL_DIST_ATR: 2.0,
                     LEVERAGE: 2, MAX_OPEN_POSITIONS: 3
                 }
             });
-            const [history, setHistory] = useState([]);
+const [history, setHistory] = useState([]);
             const [loading, setLoading] = useState(false);
             const [result, setResult] = useState(null);
 
             // [Chart State]
-            const [graphList, setGraphList] = useState([]); // [{ label: 'BTC', data: [...] }, ...]
+            const [graphList, setGraphList] = useState([]); 
             const [currentGraphIndex, setCurrentGraphIndex] = useState(0);
 
             // [UI State]
-            const [activeTooltipId, setActiveTooltipId] = useState(null); // Desktop Tooltip
-            const [mobileModalData, setMobileModalData] = useState(null); // Mobile Modal
+            const [activeTooltipId, setActiveTooltipId] = useState(null); 
+            const [mobileModalData, setMobileModalData] = useState(null);
 
             const chartRef = useRef(null);
             const chartInstance = useRef(null);
@@ -375,7 +381,6 @@
                     try {
                         const [cfgRes, histRes] = await Promise.all([axios.get('/api/config'), axios.get('/api/backtest/history')]);
                         const cfg = cfgRes.data;
-                        // ATR 파라미터도 config에서 초기값을 가져오도록 보강
                         setParams(p => ({
                             ...p,
                             symbol: cfg.SYMBOLS && cfg.SYMBOLS.length > 0 ? cfg.SYMBOLS[0] : "BTC/USDT",
@@ -383,9 +388,9 @@
                                 ...p.custom_settings,
                                 LEVERAGE: cfg.LEVERAGE || 2, 
                                 MAX_OPEN_POSITIONS: cfg.MAX_OPEN_POSITIONS || 3,
-                                STOP_LOSS_ATR: cfg.STOP_LOSS_ATR || 2.0, // 추가
-                                TRAIL_TRIGGER_ATR: cfg.TRAIL_TRIGGER_ATR || 2.0, // 추가
-                                TRAIL_DIST_ATR: cfg.TRAIL_DIST_ATR || 2.0 // 추가
+                                STOP_LOSS_ATR: cfg.STOP_LOSS_ATR || 2.0,
+                                TRAIL_TRIGGER_ATR: cfg.TRAIL_TRIGGER_ATR || 2.0,
+                                TRAIL_DIST_ATR: cfg.TRAIL_DIST_ATR || 2.0
                             }
                         }));
                         setHistory(histRes.data);
@@ -399,6 +404,15 @@
                 setParams(p => ({ ...p, custom_settings: { ...p.custom_settings, [name]: Number(value) } }));
             };
 
+            // [Logic] Checkbox Mutual Exclusion
+            const handleModeChange = (mode) => {
+                if (mode === 'batch') {
+                    setParams(p => ({ ...p, is_batch: !p.is_batch, is_real_portfolio: false }));
+                } else if (mode === 'real') {
+                    setParams(p => ({ ...p, is_real_portfolio: !p.is_real_portfolio, is_batch: false }));
+                }
+            };
+
             // [Action] Run Backtest
             const runExperiment = async () => {
                 if(loading) return;
@@ -406,33 +420,50 @@
                 setResult(null);
                 setGraphList([]);
                 try {
-                    const payload = { ...params, initial_cash: Number(params.initial_cash), train_days: Number(params.train_days), test_days: Number(params.test_days), custom_settings: params.custom_settings };
+                    const payload = { 
+                        ...params, 
+                        initial_cash: Number(params.initial_cash), 
+                        train_days: Number(params.train_days), 
+                        test_days: Number(params.test_days), 
+                        custom_settings: params.custom_settings 
+                    };
+                    
                     const res = await axios.post('/api/backtest/run_custom', payload);
                     const data = res.data;
                     
-                    setResult({ ...data, type: params.is_batch ? 'batch' : 'single' });
+                    // 결과 타입 설정 (batch, real_pf, single)
+                    let type = 'single';
+                    if (params.is_batch) type = 'batch';
+                    if (params.is_real_portfolio) type = 'real_pf';
 
+                    setResult({ ...data, type });
+
+                    // 그래프 데이터 설정
                     let graphs = [];
                     if (data.equity_curve) {
                         graphs = [{ label: data.symbol, data: data.equity_curve }];
                     }
+                    // Batch나 Real PF의 경우 결과가 바로 상세 데이터로 오지 않을 수 있음 (파일로 저장됨)
+                    // 따라서 API 응답에 equity_curve가 없다면 히스토리 리로드 유도
                     if (graphs.length > 0) {
                         setGraphList(graphs);
                         setCurrentGraphIndex(0);
+                    } else {
+                        // 그래프 데이터가 없는 경우 (대용량 처리 등) 안내
+                        alert("완료되었습니다. 상세 그래프는 아래 '이력' 목록에서 선택하여 확인하세요.");
                     }
 
                     const histRes = await axios.get('/api/backtest/history');
                     setHistory(histRes.data);
-                    
-                    if (params.is_batch) {
-                        alert("배치 테스트 완료. 히스토리에서 항목을 선택하여 상세 그래프를 확인하세요.");
-                    }
 
-                } catch(e) { alert("Error: " + e.message); } 
-                finally { setLoading(false); }
+                } catch(e) { 
+                    alert("Error: " + (e.response?.data?.detail || e.message)); 
+                } finally { 
+                    setLoading(false); 
+                }
             };
 
-            // [Action] Fetch Historical Graph (Replay) - Modified for Multi-Graph Support
+            // [Action] Fetch Historical Graph
             const fetchGraphData = async (record) => {
                 try {
                     setLoading(true);
@@ -446,6 +477,7 @@
                     const res = await axios.get(`/api/backtest/result/${record.id}`);
                     const responseData = res.data; 
                     
+                    // [핵심] 다중 그래프(객체 배열) vs 단일 그래프(데이터 배열) 자동 판별
                     if (Array.isArray(responseData) && responseData.length > 0 && responseData[0].label) {
                         setGraphList(responseData);
                     } else {
@@ -454,7 +486,7 @@
                     
                     setCurrentGraphIndex(0);
                 } catch(e) {
-                    alert("그래프 데이터를 불러올 수 없습니다 (파일이 없거나 손상됨).");
+                    alert("그래프 데이터를 불러올 수 없습니다.");
                 } finally {
                     setLoading(false);
                 }
@@ -541,7 +573,7 @@
                     <div className="xl:col-span-4 bg-gray-800 p-5 rounded-xl shadow-lg border border-gray-700 flex flex-col overflow-y-auto custom-scroll">
                         <h2 className="text-lg font-bold text-white mb-4 flex items-center gap-2"><i className="ph ph-flask text-purple-400"></i> 전략 설정</h2>
                         <div className="space-y-4 flex-1">
-                            <div><label className="block text-xs font-bold text-gray-500 mb-1">SYMBOL</label><input type="text" className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600" value={params.symbol} onChange={(e)=>setParams({...params, symbol: e.target.value})} /></div>
+                            <div><label className="block text-xs font-bold text-gray-500 mb-1">SYMBOL</label><input type="text" className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600" value={params.symbol} onChange={(e)=>setParams({...params, symbol: e.target.value})} disabled={params.is_batch || params.is_real_portfolio} /></div>
                             <div><label className="block text-xs font-bold text-gray-500 mb-1">INITIAL CASH ($)</label><input type="number" className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600" value={params.initial_cash} onChange={(e)=>setParams({...params, initial_cash: e.target.value})} /></div>
                             <div className="grid grid-cols-2 gap-3">
                                 <div><label className="block text-xs text-gray-500 mb-1">TRAIN DAYS</label><input type="number" className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" value={params.train_days} onChange={(e)=>setParams({...params, train_days: e.target.value})} /></div>
@@ -552,9 +584,12 @@
                             <details className="group bg-gray-900/30 rounded-lg border border-gray-700 open:bg-gray-900/50 transition"><summary className="p-3 cursor-pointer font-bold text-sm text-red-400 flex justify-between items-center">Risk (ATR) <i className="ph-bold ph-caret-down group-open:rotate-180 transition"></i></summary><div className="p-3 pt-0 grid grid-cols-3 gap-3 border-t border-gray-700/50 mt-2"><InputGroup label="STOP" name="STOP_LOSS_ATR" val={params.custom_settings.STOP_LOSS_ATR} step="0.1" /><InputGroup label="TRIGGER" name="TRAIL_TRIGGER_ATR" val={params.custom_settings.TRAIL_TRIGGER_ATR} step="0.1" /><InputGroup label="DIST" name="TRAIL_DIST_ATR" val={params.custom_settings.TRAIL_DIST_ATR} step="0.1" /></div></details>
                         </div>
                         <div className="mt-6 pt-4 border-t border-gray-700 space-y-3">
-                            <div className="flex gap-4 text-xs text-gray-400">
-                                <label className="flex items-center gap-2"><input type="checkbox" checked={params.update_data} onChange={(e)=>setParams({...params, update_data: e.target.checked})} /> <span>데이터 갱신</span></label>
-                                <label className="flex items-center gap-2"><input type="checkbox" checked={params.is_batch} onChange={(e)=>setParams({...params, is_batch: e.target.checked})} /> <span>일괄 테스트</span></label>
+                            {/* [NEW] Checkbox Group with Real Portfolio */}
+                            <div className="flex flex-wrap gap-4 text-xs text-gray-400 bg-gray-900/50 p-3 rounded border border-gray-700">
+                                <label className="flex items-center gap-2 cursor-pointer hover:text-white"><input type="checkbox" checked={params.update_data} onChange={(e)=>setParams({...params, update_data: e.target.checked})} /> <span>데이터 갱신</span></label>
+                                <div className="w-full h-px bg-gray-700 my-1"></div>
+                                <label className="flex items-center gap-2 cursor-pointer hover:text-yellow-400"><input type="checkbox" checked={params.is_batch} onChange={()=>handleModeChange('batch')} /> <span>일괄 테스트 (Batch)</span></label>
+                                <label className="flex items-center gap-2 cursor-pointer hover:text-green-400"><input type="checkbox" checked={params.is_real_portfolio} onChange={()=>handleModeChange('real')} /> <span>리얼 포트폴리오 (Real PF)</span></label>
                             </div>
                             <button onClick={runExperiment} disabled={loading} className={`w-full py-3 rounded-lg font-bold text-white shadow-lg flex justify-center items-center gap-2 ${loading?'bg-gray-700':'bg-purple-600 hover:bg-purple-500'}`}>{loading ? <i className="ph ph-spinner animate-spin text-xl"></i> : <i className="ph ph-play text-xl"></i>} 실행</button>
                         </div>
@@ -581,7 +616,7 @@
                             <div className="flex-1 relative bg-gray-900/50 rounded-lg border border-gray-700/50">
                                 {graphList.length > 0 ? <canvas ref={chartRef}></canvas> : <div className="flex items-center justify-center h-full text-gray-600 text-sm">실행 결과 또는 이력을 선택하세요.</div>}
                             </div>
-                            {result && (<div className="mt-3 flex gap-3 text-xs md:text-sm overflow-x-auto whitespace-nowrap scrollbar-hide"><span className="bg-gray-900 px-2 py-1 rounded border border-gray-700">ROI <b className={result.roi>=0?"text-green-400":"text-red-400"}>{result.roi}%</b></span><span className="bg-gray-900 px-2 py-1 rounded border border-gray-700">MDD <b className="text-red-400">-{result.mdd}%</b></span></div>)}
+                            {result && (<div className="mt-3 flex gap-3 text-xs md:text-sm overflow-x-auto whitespace-nowrap scrollbar-hide"><span className="bg-gray-900 px-2 py-1 rounded border border-gray-700">ROI <b className={result.roi>=0?"text-green-400":"text-red-400"}>{result.roi}%</b></span><span className="bg-gray-900 px-2 py-1 rounded border border-gray-700">MDD <b className="text-red-400">-{result.mdd}%</b></span><span className="bg-gray-900 px-2 py-1 rounded border border-gray-700 text-gray-400">{result.symbol}</span></div>)}
                         </div>
 
                         {/* History List */}
@@ -673,9 +708,9 @@
         };
 
         // ------------------------------------------------------------------
-        // [Component] Settings Tab (Updated)
+        // [Component] Settings Tab
         // ------------------------------------------------------------------
-        const Settings = ({ config, status }) => { // [NEW] status prop 추가
+        const Settings = ({ config, status }) => {
             const [formData, setFormData] = useState({});
             const [targetBalance, setTargetBalance] = useState(10000);
             const [loading, setLoading] = useState(false);
@@ -760,12 +795,11 @@
                             <div><label className="text-xs text-gray-400 block mb-1">Leverage</label><input type="number" name="LEVERAGE" value={formData.LEVERAGE || 1} onChange={handleChange} className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600" /></div>
                             <div><label className="text-xs text-gray-400 block mb-1">Max Positions</label><input type="number" name="MAX_OPEN_POSITIONS" value={formData.MAX_OPEN_POSITIONS || 3} onChange={handleChange} className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600" /></div>
                             
-                            {/* ATR 관련 필드 추가 시작 */}
+                            {/* ATR 관련 필드 */}
                             <div className="md:col-span-2"><h3 className="text-sm font-bold text-red-400 mt-2">ATR (리스크 관리)</h3></div>
-                            <div><label className="text-xs text-gray-500 block mb-1">STOP_LOSS_ATR (초기 손절)</label><input type="number" step="0.1" name="STOP_LOSS_ATR" value={formData.STOP_LOSS_ATR || 0.0} onChange={handleChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" /></div>
-                            <div><label className="text-xs text-gray-500 block mb-1">TRAIL_TRIGGER_ATR (트레일 발동)</label><input type="number" step="0.1" name="TRAIL_TRIGGER_ATR" value={formData.TRAIL_TRIGGER_ATR || 0.0} onChange={handleChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" /></div>
-                            <div><label className="text-xs text-gray-500 block mb-1">TRAIL_DIST_ATR (트레일 간격)</label><input type="number" step="0.1" name="TRAIL_DIST_ATR" value={formData.TRAIL_DIST_ATR || 0.0} onChange={handleChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" /></div>
-                            {/* ATR 관련 필드 추가 끝 */}
+                            <div><label className="text-xs text-gray-500 block mb-1">STOP_LOSS_ATR</label><input type="number" step="0.1" name="STOP_LOSS_ATR" value={formData.STOP_LOSS_ATR || 0.0} onChange={handleChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" /></div>
+                            <div><label className="text-xs text-gray-500 block mb-1">TRAIL_TRIGGER_ATR</label><input type="number" step="0.1" name="TRAIL_TRIGGER_ATR" value={formData.TRAIL_TRIGGER_ATR || 0.0} onChange={handleChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" /></div>
+                            <div><label className="text-xs text-gray-500 block mb-1">TRAIL_DIST_ATR</label><input type="number" step="0.1" name="TRAIL_DIST_ATR" value={formData.TRAIL_DIST_ATR || 0.0} onChange={handleChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" /></div>
 
                             {['RSI_BUY_LOWER','RSI_BUY_UPPER','RSI_SELL_LOWER','RSI_SELL_UPPER'].map(f => (
                                 <div key={f}><label className="text-xs text-gray-500 block mb-1">{f}</label><input type="number" name={f} value={formData[f] || 0} onChange={handleChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" /></div>
