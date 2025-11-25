@@ -12,7 +12,7 @@ from trader import BinanceTrader
 from api_server import app, run_api_server
 from discord_main import start_discord_bot
 
-New_Port = 48000  # API 서버 포트 설정
+New_Port = 58000  # API 서버 포트 설정
 
 async def main():
     print("="*50)
