@@ -18,3 +18,5 @@ Dockerfile
 README.md
 fix.md
 .gemini
+src/data
+src/models
