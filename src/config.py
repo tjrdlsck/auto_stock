@@ -39,7 +39,7 @@ CONFIG = {
     # -----------------------------------------------------
     # 동시에 보유할 수 있는 최대 코인 개수입니다.
     # 예: 3으로 설정 시, 전체 자금을 3등분하여 진입하며 4번째 코인은 진입하지 않습니다.
-    "MAX_OPEN_POSITIONS": 5,
+    "MAX_OPEN_POSITIONS": 2,
     
     # -----------------------------------------------------
     # [NEW] 7. 전략 파라미터 (V13 - Unconstrained Trend)
@@ -50,11 +50,11 @@ CONFIG = {
     "RSI_BUY_UPPER": 65,
     
     # Bear 진입: Price < EMA & RSI가 [35, 70] 사이
-    "RSI_SELL_LOWER": 35,
-    "RSI_SELL_UPPER": 70,
+    "RSI_SELL_LOWER": 20,
+    "RSI_SELL_UPPER": 75,
     
     # 7-2. 청산 및 관리 조건 (ATR 기반 동적 대응)
-    "STOP_LOSS_ATR": 2.0,      # 진입 시 초기 손절 거리 (ATR x 2)
+    "STOP_LOSS_ATR": 2.5,      # 진입 시 초기 손절 거리 (ATR x 2)
     "TRAIL_TRIGGER_ATR": 2.0,  # 수익이 ATR x 2 이상 발생 시 트레일링 시작
     "TRAIL_DIST_ATR": 2.0,     # 고점(Long)/저점(Short)에서 ATR x 2 간격 유지
     

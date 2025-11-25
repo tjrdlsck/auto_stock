@@ -1,34 +1,28 @@
 services:
-  quantbot:
-    container_name: quantbot_v2
-    image: binance-quant-bot:latest 
-    build:
-      context: .
-      dockerfile: Dockerfile
-    
-    # 컨테이너가 멈추지 않는 한 자동 재시작 (오류 발생 시 복구)
+  quant-bot:
+    image: my-quantbot/hybrid:v1.0
+    build: .
+    container_name: quant_bot_container
+    # 컨테이너가 죽으면 자동으로 재시작 (안정성 확보)
     restart: unless-stopped
-    
-    # 포트 포워딩 (호스트:컨테이너)
-    ports:
-      - "58000:58000"
-    
-    # 환경 변수 파일 로드
+    # 호스트의 .env 파일을 컨테이너 내부로 로드
     env_file:
       - .env
-    
-    # 데이터 영속성 및 시간 설정
+    ports:
+      - "58000:58000"
     volumes:
-      # 1. 데이터베이스 및 CSV 파일 저장소 (호스트와 동기화)
+      # [중요] 로컬의 데이터와 모델을 컨테이너와 공유하여 영구 보존
       - ./src/data:/app/src/data
-      # 2. 학습된 AI 모델 저장소
       - ./src/models:/app/src/models
-      # 3. 설정 파일 (컨테이너 재시작 없이 설정 변경 가능하게 하려면 주석 해제)
-      # - ./src/config.json:/app/src/config.json
-      # 4. 호스트의 시간대(Timezone)를 컨테이너와 동기화 (트레이딩 필수)
-      - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
-
-    # 컨테이너 내부 환경 변수 추가 설정 (필요 시)
+      # 필요시 소스코드 수정 즉시 반영을 위해 아래 주석 해제 가능 (개발용)
+      # - .:/app
     environment:
-      - TZ=Asia/Seoul
+      - TZ=Asia/Seoul  # 한국 시간 설정 (로그 확인용)
+    # 로그 설정 (용량 무제한 방지)
+    logging:
+      driver: "json-file"
+      options:
+        # 파일 하나당 최대 크기 (하루치 넉넉하게 잡음)
+        max-size: "50m" 
+        # 최대 파일 개수 (7일 + 여유분 1~3개 = 10개 추천)
+        max-file: "10"

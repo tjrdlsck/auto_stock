@@ -8,11 +8,11 @@ import ccxt.async_support as ccxt
 from datetime import datetime
 import asyncio
 import aiosqlite
-import zipfile # [NEW] Zip 파일 처리를 위해 추가
-import io      # [NEW] 메모리 스트림 처리를 위해 추가
+import zipfile 
+import io      
+import sqlite3 
 from dotenv import load_dotenv
 from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
-import sqlite3 # IntegrityError 처리를 위해 추가
 
 # 프로젝트 경로 설정
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -206,7 +206,6 @@ class BinanceTrader:
         return state
 
     async def _upsert_position_to_db(self, symbol, entry_price, highest_price, lowest_price, side, amount, entry_regime, stop_loss_price):
-        # 1. DB 업데이트
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("DELETE FROM positions WHERE symbol = ? AND mode = ?", (symbol, self.mode))
             await db.execute('''
@@ -215,7 +214,6 @@ class BinanceTrader:
             ''', (symbol, self.mode, entry_price, highest_price, lowest_price, side, amount, entry_regime, stop_loss_price))
             await db.commit()
         
-        # 2. 메모리 상태 즉시 동기화
         self.state[symbol] = {
             'entry_price': entry_price,
             'high': highest_price,
@@ -231,7 +229,6 @@ class BinanceTrader:
             await db.execute("DELETE FROM positions WHERE symbol = ? AND mode = ?", (symbol, self.mode))
             await db.commit()
         
-        # 메모리 삭제
         if symbol in self.state:
             del self.state[symbol]
 
@@ -431,7 +428,7 @@ class BinanceTrader:
         except: return 0.0
 
     # -----------------------------------------------------------
-    # [Main Logic Loop]
+    # [Main Logic Loop] (Look-Ahead Bias Fix Applied)
     # -----------------------------------------------------------
     async def run_logic(self):
         if not self.is_initialized: await self.initialize()
@@ -449,14 +446,27 @@ class BinanceTrader:
             
             for symbol in target_symbols:
                 df = await self.fetch_data_and_features(symbol)
-                if df is None: continue
+                if df is None or len(df) < 30: continue
                 
-                curr_price = df['close'].iloc[-1]
-                curr_rsi = df['RSI_14'].iloc[-1]
-                curr_ema = df[f'EMA_{self.EMA_PERIOD}'].iloc[-1]
-                curr_atr = df['ATRr_14'].iloc[-1]
+                # ---------------------------------------------------
+                # [중요] Look-Ahead Bias(Repainting) 방지 로직 분리
+                # ---------------------------------------------------
+                
+                # 1. 실행/감시용 (Real-time)
+                # 현재 진행 중인 캔들의 가격. 손절/익절 감시 및 트레일링 스탑에 사용
+                current_price = df['close'].iloc[-1] 
+                
+                # 2. 신호 판단용 (Confirmed)
+                # 직전 마감된 캔들의 데이터. 진입/청산 신호 판단에 사용
+                prev_close = df['close'].iloc[-2]
+                prev_rsi = df['RSI_14'].iloc[-2]
+                prev_ema = df[f'EMA_{self.EMA_PERIOD}'].iloc[-2]
+                prev_atr = df['ATRr_14'].iloc[-2]
 
-                regime, r_map = self.get_hmm_regime(df, symbol)
+                # 3. Regime 판단 (Confirmed)
+                # 마지막 진행 중인 캔들(iloc[-1])을 제외하고 전달하여
+                # '확정된' 캔들 기준의 국면을 판단함.
+                regime, r_map = self.get_hmm_regime(df.iloc[:-1], symbol)
                 if regime is None: continue
                 
                 has_position = symbol in self.state
@@ -473,31 +483,33 @@ class BinanceTrader:
                     entry_regime = pos_data.get('entry_regime', 'unknown')
 
                     stop_atr = self.get_conf('STOP_LOSS_ATR', 2.0)
-                    trail_trigger = curr_atr * self.get_conf('TRAIL_TRIGGER_ATR', 2.0)
-                    trail_dist = curr_atr * self.get_conf('TRAIL_DIST_ATR', 2.0)
+                    trail_trigger = prev_atr * self.get_conf('TRAIL_TRIGGER_ATR', 2.0)
+                    trail_dist = prev_atr * self.get_conf('TRAIL_DIST_ATR', 2.0)
                     
                     if stop_loss == 0:
-                        stop_loss = entry_price - (curr_atr * stop_atr) if side == 'buy' else entry_price + (curr_atr * stop_atr)
+                        # 초기 스탑로스 계산 시에도 prev_atr 사용 권장
+                        stop_loss = entry_price - (prev_atr * stop_atr) if side == 'buy' else entry_price + (prev_atr * stop_atr)
 
                     should_close = False
                     reason = ""
                     
-                    # 1. 하드 스탑
-                    if side == 'buy' and curr_price < stop_loss: should_close = True; reason = "StopLoss"
-                    elif side == 'sell' and curr_price > stop_loss: should_close = True; reason = "StopLoss"
+                    # 1. 하드 스탑 & 트레일링 스탑 실행 (실시간 가격 기준)
+                    # 손절은 즉각 반응해야 하므로 current_price 사용
+                    if side == 'buy' and current_price < stop_loss: should_close = True; reason = "StopLoss"
+                    elif side == 'sell' and current_price > stop_loss: should_close = True; reason = "StopLoss"
                     
-                    # 2. 트레일링 스탑 업데이트
+                    # 2. 트레일링 스탑 '업데이트' (실시간 고가/저가 기준)
                     if not should_close:
                         updated = False
                         if side == 'buy':
-                            if curr_price > high_price: 
-                                high_price = curr_price; updated = True
+                            if current_price > high_price: 
+                                high_price = current_price; updated = True
                             if high_price >= entry_price + trail_trigger:
                                 new_stop = high_price - trail_dist
                                 if new_stop > stop_loss: stop_loss = new_stop; updated = True
                         else: # sell
-                            if curr_price < low_price: 
-                                low_price = curr_price; updated = True
+                            if current_price < low_price: 
+                                low_price = current_price; updated = True
                             if low_price <= entry_price - trail_trigger:
                                 new_stop = low_price + trail_dist
                                 if new_stop < stop_loss: stop_loss = new_stop; updated = True
@@ -505,7 +517,7 @@ class BinanceTrader:
                         if updated:
                             await self._upsert_position_to_db(symbol, entry_price, high_price, low_price, side, amount, entry_regime, stop_loss)
 
-                    # 3. 국면 전환
+                    # 3. 국면 전환 및 전략적 청산 (확정된 신호 기준)
                     if not should_close:
                         if (entry_regime == 'bull' and regime == r_map['bear']) or \
                            (entry_regime == 'bear' and regime == r_map['bull']):
@@ -513,6 +525,7 @@ class BinanceTrader:
 
                     if should_close:
                         close_side = 'sell' if side == 'buy' else 'buy'
+                        # 청산 주문은 현재가 기준으로 실행
                         exec_price, order_id = await self.execute_order(symbol, close_side, amount, reduce_only=True)
                         
                         if exec_price:
@@ -536,11 +549,12 @@ class BinanceTrader:
                     signal = None
                     target_regime = None
 
+                    # 진입 판단: 확정된 캔들(prev_) 사용
                     if regime == r_map['bull']:
-                        if curr_price > curr_ema and rsi_buy_low < curr_rsi < rsi_buy_high:
+                        if prev_close > prev_ema and rsi_buy_low < prev_rsi < rsi_buy_high:
                             signal = 'buy'; target_regime = 'bull'
                     elif regime == r_map['bear']:
-                        if curr_price < curr_ema and rsi_sell_low < curr_rsi < rsi_sell_high:
+                        if prev_close < prev_ema and rsi_sell_low < prev_rsi < rsi_sell_high:
                             signal = 'sell'; target_regime = 'bear'
                     
                     if signal:
@@ -551,12 +565,14 @@ class BinanceTrader:
                         balance = total_equity
                         max_pos = self.get_conf('MAX_OPEN_POSITIONS', 3)
                         allocation = (balance / max_pos) * 0.95
-                        qty = (allocation * leverage) / curr_price
+                        # 수량 계산은 현재가(current_price) 기준이 정확함
+                        qty = (allocation * leverage) / current_price
                         
                         exec_price, order_id = await self.execute_order(symbol, signal, qty)
                         if exec_price:
                             stop_atr = self.get_conf('STOP_LOSS_ATR', 2.0)
-                            sl_dist = curr_atr * stop_atr
+                            # 초기 손절폭은 변동성이 확정된 prev_atr 사용
+                            sl_dist = prev_atr * stop_atr
                             sl_price = exec_price - sl_dist if signal == 'buy' else exec_price + sl_dist
                             
                             await self._upsert_position_to_db(symbol, exec_price, exec_price, exec_price, signal, qty, target_regime, sl_price)
@@ -617,23 +633,18 @@ class BinanceTrader:
                         if not filename.endswith('.csv'): continue
                         
                         # 파일명 파싱 (Format: BT_{timestamp}_{symbol}.csv)
-                        # 예: BT_20231125_143000_BTCUSDT.csv
                         label = filename.replace('.csv', '')
                         parts = label.split('_')
                         if len(parts) >= 3 and parts[0] == 'BT':
-                            # parts[0]=BT, parts[1]=Date, parts[2]=Time, parts[3:]=Symbol
                             symbol_part = "_".join(parts[3:]) 
                             if symbol_part:
                                 label = symbol_part
                         
                         with z.open(filename) as f:
                             df = pd.read_csv(f)
-                            # 개별 파일에는 Portfolio_Value 컬럼이 없을 수 있음 (컬럼 확인 필요)
-                            # backtest_runner.py에서 저장 시 daily_stats를 저장하며,
-                            # 여기에는 'Portfolio_Value' 키가 포함됨.
                             val_col = 'Portfolio_Value'
                             if val_col not in df.columns:
-                                val_col = df.columns[-1] # Fallback
+                                val_col = df.columns[-1] 
                             
                             coin_data = []
                             for _, row in df.iterrows():
@@ -643,7 +654,7 @@ class BinanceTrader:
                 
                 return results
             
-            # 2. Single Backtest (CSV) - 기존 호환성 유지 (단일 리스트 반환)
+            # 2. Single Backtest (CSV) - 기존 호환성 유지
             else:
                 df = pd.read_csv(csv_path)
                 data = []
@@ -743,6 +754,21 @@ class BinanceTrader:
                 await self.notification.log(msg, level="INFO")
                 return msg
             else: return f"❌ {symbol} 청산 실패"
+
+    async def close_all_positions(self):
+        """모든 포지션을 강제 청산하는 메서드"""
+        if not self.state:
+            return "⚠️ 청산할 포지션이 없습니다."
+
+        logs = []
+        # 딕셔너리 크기 변경 오류 방지를 위해 키를 리스트로 복사하여 순회
+        target_symbols = list(self.state.keys())
+        
+        for symbol in target_symbols:
+            msg = await self.safe_force_close(symbol)
+            logs.append(msg)
+        
+        return "\n".join(logs)
 
     async def close(self):
         await self.exchange.close()

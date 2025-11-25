@@ -321,7 +321,8 @@
                 </div>
             );
         };
-// ------------------------------------------------------------------
+
+        // ------------------------------------------------------------------
         // [Component] Backtest Lab (Final: Carousel, History Replay, Modal)
         // ------------------------------------------------------------------
         const BacktestLab = () => {
@@ -374,12 +375,17 @@
                     try {
                         const [cfgRes, histRes] = await Promise.all([axios.get('/api/config'), axios.get('/api/backtest/history')]);
                         const cfg = cfgRes.data;
+                        // ATR 파라미터도 config에서 초기값을 가져오도록 보강
                         setParams(p => ({
                             ...p,
                             symbol: cfg.SYMBOLS && cfg.SYMBOLS.length > 0 ? cfg.SYMBOLS[0] : "BTC/USDT",
                             custom_settings: {
                                 ...p.custom_settings,
-                                LEVERAGE: cfg.LEVERAGE || 2, MAX_OPEN_POSITIONS: cfg.MAX_OPEN_POSITIONS || 3
+                                LEVERAGE: cfg.LEVERAGE || 2, 
+                                MAX_OPEN_POSITIONS: cfg.MAX_OPEN_POSITIONS || 3,
+                                STOP_LOSS_ATR: cfg.STOP_LOSS_ATR || 2.0, // 추가
+                                TRAIL_TRIGGER_ATR: cfg.TRAIL_TRIGGER_ATR || 2.0, // 추가
+                                TRAIL_DIST_ATR: cfg.TRAIL_DIST_ATR || 2.0 // 추가
                             }
                         }));
                         setHistory(histRes.data);
@@ -406,14 +412,10 @@
                     
                     setResult({ ...data, type: params.is_batch ? 'batch' : 'single' });
 
-                    // Run 직후에는 즉시 그래프를 보여줄 데이터가 없을 수 있음 (특히 Batch의 경우)
-                    // Single의 경우 equity_curve가 반환되므로 바로 표시 가능
                     let graphs = [];
                     if (data.equity_curve) {
                         graphs = [{ label: data.symbol, data: data.equity_curve }];
                     }
-                    // Batch의 경우 details에 개별 데이터가 있지만, 전체를 보려면 History에서 로드하는 것이 나을 수 있음.
-                    // 우선 Single Run일 때만 바로 그래프 셋팅
                     if (graphs.length > 0) {
                         setGraphList(graphs);
                         setCurrentGraphIndex(0);
@@ -444,12 +446,9 @@
                     const res = await axios.get(`/api/backtest/result/${record.id}`);
                     const responseData = res.data; 
                     
-                    // [핵심 변경] 응답 데이터가 다중 그래프(객체 배열)인지 단일 그래프(데이터 배열)인지 확인
                     if (Array.isArray(responseData) && responseData.length > 0 && responseData[0].label) {
-                        // New Format: [{label: 'Total', data: [...]}, {label: 'BTC', data: [...]}]
                         setGraphList(responseData);
                     } else {
-                        // Legacy Format: [{time:..., value:...}]
                         setGraphList([{ label: record.symbol, data: responseData }]);
                     }
                     
@@ -478,7 +477,6 @@
                     const labels = currentGraph.data.map(d => d.time);
                     const values = currentGraph.data.map(d => d.value);
                     
-                    // Color logic
                     const startVal = values[0] || 0;
                     const endVal = values[values.length - 1] || 0;
                     const isPositive = endVal >= startVal;
@@ -675,10 +673,11 @@
         };
 
         // ------------------------------------------------------------------
-        // [Component] Settings Tab
+        // [Component] Settings Tab (Updated)
         // ------------------------------------------------------------------
-        const Settings = ({ config }) => {
+        const Settings = ({ config, status }) => { // [NEW] status prop 추가
             const [formData, setFormData] = useState({});
+            const [targetBalance, setTargetBalance] = useState(10000);
             const [loading, setLoading] = useState(false);
 
             useEffect(() => {
@@ -700,19 +699,78 @@
                 try { await axios.post('/api/config/update', { settings: formData }); alert("저장 완료"); } catch (e) { alert("저장 실패"); } finally { setLoading(false); }
             };
 
+            const handleResetBalance = async () => {
+                if (!confirm(`모의투자 잔고를 $${targetBalance.toLocaleString()}으로 초기화하시겠습니까?`)) return;
+                try {
+                    await axios.post('/api/reset_balance', { amount: Number(targetBalance) });
+                    alert("초기화 완료");
+                } catch(e) {
+                    alert("초기화 실패");
+                }
+            };
+
+            const isPaperRunning = status?.mode === 'PAPER';
+
             return (
-                <div className="bg-gray-800 p-6 md:p-8 rounded-xl shadow-lg border border-gray-700 animate-fade-in max-w-4xl mx-auto pb-24 md:pb-8">
-                    <div className="flex justify-between items-center mb-6 border-b border-gray-700 pb-4">
-                        <h2 className="text-lg md:text-xl font-bold text-white"><i className="ph ph-gear"></i> 시스템 설정</h2>
-                        <button onClick={handleSave} disabled={loading} className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg font-bold shadow text-sm">{loading ? '저장 중...' : '저장'}</button>
+                <div className="bg-gray-800 p-6 md:p-8 rounded-xl shadow-lg border border-gray-700 animate-fade-in max-w-4xl mx-auto pb-24 md:pb-8 space-y-8">
+                    
+                    {/* [NEW] Paper Trading Balance Manager */}
+                    <div>
+                        <div className="flex justify-between items-center mb-4 border-b border-gray-700 pb-2">
+                            <h2 className="text-lg md:text-xl font-bold text-green-400"><i className="ph ph-money"></i> 모의투자 자본금 설정</h2>
+                        </div>
+                        <div className="bg-gray-900 p-4 rounded-lg border border-gray-700 grid grid-cols-1 md:grid-cols-2 gap-6 items-end">
+                            <div>
+                                <label className="text-xs text-gray-500 block mb-1">현재 잔고 (Real-time)</label>
+                                <div className="text-2xl font-bold text-white font-mono">
+                                    ${status?.paper_balance?.toLocaleString() || 0}
+                                </div>
+                                {isPaperRunning && <p className="text-xs text-yellow-500 mt-1"><i className="ph-fill ph-warning"></i> 모의매매 실행 중에는 변경 불가</p>}
+                            </div>
+                            <div className="flex gap-2">
+                                <div className="flex-1">
+                                    <label className="text-xs text-gray-500 block mb-1">초기화 금액 설정</label>
+                                    <input 
+                                        type="number" 
+                                        value={targetBalance} 
+                                        onChange={(e) => setTargetBalance(e.target.value)}
+                                        disabled={isPaperRunning}
+                                        className="w-full bg-gray-800 text-white p-3 rounded border border-gray-600 disabled:opacity-50 disabled:cursor-not-allowed" 
+                                    />
+                                </div>
+                                <button 
+                                    onClick={handleResetBalance} 
+                                    disabled={isPaperRunning}
+                                    className="px-4 py-3 bg-green-600 hover:bg-green-500 disabled:bg-gray-700 disabled:cursor-not-allowed text-white rounded-lg font-bold shadow text-sm whitespace-nowrap"
+                                >
+                                    초기화
+                                </button>
+                            </div>
+                        </div>
                     </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <div className="md:col-span-2"><label className="text-xs text-blue-300 block mb-1">Symbols</label><input type="text" name="SYMBOLS" value={formData.SYMBOLS || ''} onChange={handleChange} className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600 text-sm font-mono" /></div>
-                        <div><label className="text-xs text-gray-400 block mb-1">Leverage</label><input type="number" name="LEVERAGE" value={formData.LEVERAGE || 1} onChange={handleChange} className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600" /></div>
-                        <div><label className="text-xs text-gray-400 block mb-1">Max Positions</label><input type="number" name="MAX_OPEN_POSITIONS" value={formData.MAX_OPEN_POSITIONS || 3} onChange={handleChange} className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600" /></div>
-                        {['RSI_BUY_LOWER','RSI_BUY_UPPER','RSI_SELL_LOWER','RSI_SELL_UPPER'].map(f => (
-                            <div key={f}><label className="text-xs text-gray-500 block mb-1">{f}</label><input type="number" name={f} value={formData[f] || 0} onChange={handleChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" /></div>
-                        ))}
+
+                    {/* System Configuration Form */}
+                    <div>
+                        <div className="flex justify-between items-center mb-6 border-b border-gray-700 pb-4">
+                            <h2 className="text-lg md:text-xl font-bold text-white"><i className="ph ph-gear"></i> 시스템 설정</h2>
+                            <button onClick={handleSave} disabled={loading} className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg font-bold shadow text-sm">{loading ? '저장 중...' : '설정 저장'}</button>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div className="md:col-span-2"><label className="text-xs text-blue-300 block mb-1">Symbols</label><input type="text" name="SYMBOLS" value={formData.SYMBOLS || ''} onChange={handleChange} className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600 text-sm font-mono" /></div>
+                            <div><label className="text-xs text-gray-400 block mb-1">Leverage</label><input type="number" name="LEVERAGE" value={formData.LEVERAGE || 1} onChange={handleChange} className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600" /></div>
+                            <div><label className="text-xs text-gray-400 block mb-1">Max Positions</label><input type="number" name="MAX_OPEN_POSITIONS" value={formData.MAX_OPEN_POSITIONS || 3} onChange={handleChange} className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600" /></div>
+                            
+                            {/* ATR 관련 필드 추가 시작 */}
+                            <div className="md:col-span-2"><h3 className="text-sm font-bold text-red-400 mt-2">ATR (리스크 관리)</h3></div>
+                            <div><label className="text-xs text-gray-500 block mb-1">STOP_LOSS_ATR (초기 손절)</label><input type="number" step="0.1" name="STOP_LOSS_ATR" value={formData.STOP_LOSS_ATR || 0.0} onChange={handleChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" /></div>
+                            <div><label className="text-xs text-gray-500 block mb-1">TRAIL_TRIGGER_ATR (트레일 발동)</label><input type="number" step="0.1" name="TRAIL_TRIGGER_ATR" value={formData.TRAIL_TRIGGER_ATR || 0.0} onChange={handleChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" /></div>
+                            <div><label className="text-xs text-gray-500 block mb-1">TRAIL_DIST_ATR (트레일 간격)</label><input type="number" step="0.1" name="TRAIL_DIST_ATR" value={formData.TRAIL_DIST_ATR || 0.0} onChange={handleChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" /></div>
+                            {/* ATR 관련 필드 추가 끝 */}
+
+                            {['RSI_BUY_LOWER','RSI_BUY_UPPER','RSI_SELL_LOWER','RSI_SELL_UPPER'].map(f => (
+                                <div key={f}><label className="text-xs text-gray-500 block mb-1">{f}</label><input type="number" name={f} value={formData[f] || 0} onChange={handleChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" /></div>
+                            ))}
+                        </div>
                     </div>
                 </div>
             );
@@ -780,7 +838,7 @@
                         {activeTab === 'dashboard' && <Dashboard status={status} logs={logs} sendCommand={sendCommand} forceClose={forceClose} />}
                         {activeTab === 'history' && <History />}
                         {activeTab === 'lab' && <BacktestLab />}
-                        {activeTab === 'settings' && <Settings config={config} />}
+                        {activeTab === 'settings' && <Settings config={config} status={status} />}
                     </div>
 
                     {/* Mobile Bottom Navigation */}
