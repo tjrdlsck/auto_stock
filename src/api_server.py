@@ -59,7 +59,7 @@ def get_hub():
     return app.state.hub
 
 # ---------------------------------------------------------
-# [Routes] 1. Config Management (설정 관리)
+# [Routes] 1. Config Management
 # ---------------------------------------------------------
 @app.get("/api/config")
 async def get_config():
@@ -85,15 +85,16 @@ async def reset_config():
     return {"status": "success", "message": "기본값으로 초기화되었습니다.", "config": new_conf}
 
 # ---------------------------------------------------------
-# [Routes] 2. System Status & Control (상태 및 제어)
+# [Routes] 2. System Status & Control
 # ---------------------------------------------------------
 @app.get("/api/status")
 async def get_status():
     """봇의 현재 상태 조회"""
     trader = get_trader()
+    
     free, total = await trader.get_balance()
     positions = await trader.get_positions()
-    saved_paper_bal = trader.get_saved_paper_balance()
+    saved_paper_bal = await trader.get_saved_paper_balance()
     
     discord_active = False
     if hasattr(app.state, 'hub') and app.state.hub.discord_bot:
@@ -138,11 +139,11 @@ async def force_close(symbol: str):
 async def reset_paper_balance(data: BalanceReset):
     """모의투자 잔고 강제 초기화"""
     trader = get_trader()
-    new_bal = trader.reset_paper_balance(data.amount)
+    new_bal = await trader.reset_paper_balance(data.amount)
     return {"status": "success", "balance": new_bal}
 
 # ---------------------------------------------------------
-# [Routes] 3. Backtest Lab (백테스팅 연구소)
+# [Routes] 3. Backtest Lab
 # ---------------------------------------------------------
 
 # 기존 단순 백테스트 (하위 호환용)
@@ -163,8 +164,8 @@ async def run_custom_backtest(params: CustomBacktestParams):
     current_config = trader.config_manager.get_all().copy()
     if params.custom_settings:
         current_config.update(params.custom_settings)
-    
-    # [NEW] 입력받은 학습/테스트 기간을 설정 정보에 포함시킴 (결과 화면 표시용)
+        
+    # 입력받은 학습/테스트 기간을 설정 정보에 포함
     current_config['TRAIN_DAYS'] = params.train_days
     current_config['TEST_DAYS'] = params.test_days
     
@@ -181,7 +182,7 @@ async def run_custom_backtest(params: CustomBacktestParams):
     loop = asyncio.get_running_loop()
     
     try:
-        # 2. 실행
+        # 2. 실행 (CPU Bound 작업이므로 Executor에서 실행)
         if params.is_batch:
             result = await loop.run_in_executor(
                 None,
@@ -204,9 +205,9 @@ async def run_custom_backtest(params: CustomBacktestParams):
                     "win_rate": 0, 
                     "trade_count": sum(len(r.get('trades', [])) for r in result.get('details', [])),
                     "final_balance": 0,
-                    "csv_path": result.get('csv_path', '') # zip 파일 경로
+                    "csv_path": result.get('csv_path', '')
                 }
-                trader.save_backtest_result(save_data)
+                await trader.save_backtest_result(save_data)
 
         else:
             result = await loop.run_in_executor(
@@ -223,7 +224,7 @@ async def run_custom_backtest(params: CustomBacktestParams):
             )
             # 단일 결과 저장
             if "error" not in result:
-                trader.save_backtest_result(result)
+                await trader.save_backtest_result(result)
             
         if "error" in result:
             raise HTTPException(status_code=500, detail=result['error'])
@@ -237,21 +238,33 @@ async def run_custom_backtest(params: CustomBacktestParams):
 async def get_backtest_history():
     """백테스트 실행 이력 조회"""
     trader = get_trader()
-    return trader.get_backtest_history()
+    return await trader.get_backtest_history()
 
 @app.delete("/api/backtest/history/{record_id}")
 async def delete_backtest_history(record_id: int):
     """백테스트 이력 및 파일 삭제"""
     trader = get_trader()
-    trader.delete_backtest_record(record_id)
+    await trader.delete_backtest_record(record_id)
     return {"status": "success", "message": "Deleted"}
+
+# [NEW] 저장된 백테스트 결과 데이터(차트용) 조회
+@app.get("/api/backtest/result/{record_id}")
+async def get_backtest_result(record_id: int):
+    """특정 백테스트 레코드의 상세 데이터(Equity Curve 등) 반환"""
+    trader = get_trader()
+    data = await trader.get_backtest_result_data(record_id)
+    
+    if data is None:
+        raise HTTPException(status_code=404, detail="Result data not found or file missing")
+        
+    return data
 
 @app.get("/api/backtest/download/{record_id}")
 async def download_backtest_csv(record_id: int):
     """백테스트 파일(CSV 또는 ZIP) 다운로드"""
     trader = get_trader()
     
-    history = trader.get_backtest_history()
+    history = await trader.get_backtest_history()
     target = next((item for item in history if item["id"] == record_id), None)
     
     if not target:
@@ -261,7 +274,6 @@ async def download_backtest_csv(record_id: int):
     if not file_path or not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
     
-    # [NEW] 확장자에 따른 미디어 타입 자동 설정
     filename = os.path.basename(file_path)
     media_type = 'application/zip' if filename.endswith('.zip') else 'text/csv'
         
@@ -273,7 +285,7 @@ async def download_backtest_csv(record_id: int):
 @app.get("/api/history")
 async def get_history(mode: str = "PAPER"):
     trader = get_trader()
-    return trader.get_trade_history(target_mode=mode)
+    return await trader.get_trade_history(target_mode=mode)
 
 @app.websocket("/ws/logs")
 async def websocket_endpoint(websocket: WebSocket):

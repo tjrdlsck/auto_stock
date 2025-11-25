@@ -1,16 +1,18 @@
 import sys
 import os
 
-# Add the 'src' directory to the Python path
+# 프로젝트 루트 경로 추가 (모듈 임포트를 위해)
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import shutil
 import pandas as pd
-import pandas_ta as ta
 import numpy as np
 import joblib
 from hmmlearn.hmm import GaussianHMM
 from config import CONFIG, DATA_DIR, MODELS_DIR
+
+# [NEW] 중앙 집중식 피처 엔지니어링 함수 임포트
+from alpha_layer.features import apply_features
 
 class Brain:
     def __init__(self):
@@ -18,7 +20,7 @@ class Brain:
         self.iter = 1000       # 학습 반복 횟수
 
     def load_data(self, symbol):
-        """CSV 파일 로드 및 전처리"""
+        """CSV 파일 로드 및 전처리 (공통 모듈 사용)"""
         clean_symbol = symbol.replace('/', '')
         file_path = os.path.join(DATA_DIR, f"{clean_symbol}_{CONFIG['TIMEFRAME']}.csv")
         
@@ -28,37 +30,25 @@ class Brain:
 
         df = pd.read_csv(file_path, index_col=0, parse_dates=True)
         
-        # 필요한 특징 (RSI_14, Log_Returns, Range_Vol) 계산 (CSV에 없을 경우)
-        if 'RSI_14' not in df.columns:
-            df.ta.rsi(length=14, append=True)
-        if 'Log_Returns' not in df.columns:
-            df['Log_Returns'] = np.log(df['close'] / df['close'].shift(1))
-        if 'Range_Vol' not in df.columns:
-            df['Range_Vol'] = (df['high'] - df['low']) / df['close']
-        if 'OBV' not in df.columns:
-            df.ta.obv(append=True)
+        # [Modified] 피처 엔지니어링 및 스케일링 통합 수행
+        # 기존의 중복된 계산 로직을 제거하고 apply_features 하나로 통일합니다.
+        # 이 함수는 RSI, Log_Returns, OBV 계산 및 Rolling Z-Score 스케일링을 수행합니다.
+        df = apply_features(df)
+        
+        if df is None or df.empty:
+            return None, None
 
-        # Rolling Scaling (과거 30개 캔들 기준 정규화 -> 미래 참조 방지)
-        window = 30
-        features = ['Log_Returns', 'Range_Vol', 'RSI_14', 'OBV']
-        
-        for col in features:
-            rolling_mean = df[col].rolling(window=window).mean()
-            rolling_std = df[col].rolling(window=window).std()
-            # 0으로 나누기 방지 (+1e-8)
-            df[f'{col}_Scaled'] = (df[col] - rolling_mean) / (rolling_std + 1e-8)
-        
-        df = df.dropna()
         return df, file_path
 
     def train_model(self, df, symbol):
         """HMM 모델 학습"""
         print(f"🧠 [{symbol}] 모델 학습 중... (데이터: {len(df)} rows)")
         
+        # apply_features에서 생성된 스케일링된 컬럼 사용
+        # Features: Log Returns, Range Volatility, RSI, OBV
         X = df[['Log_Returns_Scaled', 'Range_Vol_Scaled', 'RSI_14_Scaled', 'OBV_Scaled']].values
         
         # Gaussian HMM 설정
-        # covariance_type='full': 각 피처 간의 상관관계까지 학습 (정교함 UP)
         model = GaussianHMM(
             n_components=self.n_components, 
             covariance_type="full", 
@@ -103,7 +93,7 @@ class Brain:
         for symbol in CONFIG['SYMBOLS']:
             clean_symbol = symbol.replace('/', '')
             
-            # 1. 데이터 로드
+            # 1. 데이터 로드 (apply_features 적용됨)
             df, file_path = self.load_data(symbol)
             if df is None: continue
             
@@ -120,11 +110,10 @@ class Brain:
                     avg_ret = stats[idx] * 100
                     print(f"  👉 Regime {idx} ({name}): 평균 수익률 {avg_ret:.4f}%")
                 
-                # 4. 모델 저장 (파일명: hmm_BTCUSDT.pkl)
+                # 4. 모델 저장 (Atomic Write)
                 model_path = os.path.join(MODELS_DIR, f"hmm_{clean_symbol}.pkl")
                 temp_path = model_path + ".tmp"
                 joblib.dump(model, temp_path)
-                # 운영체제 차원에서 파일 이동(rename)은 원자적(Atomic)이라 읽는 도중 깨지지 않음
                 shutil.move(temp_path, model_path) 
 
                 print(f"💾 모델 안전 저장 완료: {model_path}")

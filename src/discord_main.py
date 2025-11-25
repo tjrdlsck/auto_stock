@@ -88,12 +88,15 @@ async def hourly_trade_loop():
     if not bot.trader: return
     print(f"\n⏰ [Hourly Loop] 매매 로직 시작")
     try:
+        # [Modified] await 추가
         result = await bot.trader.run_logic()
         if bot.hub:
             await bot.hub.log(result, level="SYSTEM", send_to_discord=True)
             
+        # [Modified] await 추가
         free, total = await bot.trader.get_balance()
         positions = await bot.trader.get_positions()
+        
         status_data = {
             "type": "status_update",
             "balance": {"free": free, "total": total},
@@ -114,12 +117,17 @@ async def auto_retraining_loop():
         loop = asyncio.get_running_loop()
         
         loader = MultiSymbolLoader()
+        # 데이터 수집은 동기 함수(API 요청 많음) -> Executor 실행 권장
         await loop.run_in_executor(None, loader.run_pipeline)
         
         brain = Brain()
+        # 모델 학습은 CPU 부하 높음 -> Executor 실행 권장
         await loop.run_in_executor(None, brain.run_training)
         
-        await bot.hub.log("✅ [시스템] AI 모델 재학습 완료", level="SYSTEM")
+        # 학습 완료 후 Trader의 모델 리로드
+        await bot.trader.load_models()
+        
+        await bot.hub.log("✅ [시스템] AI 모델 재학습 및 리로드 완료", level="SYSTEM")
     except Exception as e:
         await bot.hub.log(f"⚠️ [오류] 재학습 실패: {e}", level="ERROR")
 
@@ -134,23 +142,23 @@ async def before_retraining():
 @bot.event
 async def on_ready():
     print(f'🤖 디스코드 봇 로그인: {bot.user}')
-    
-    # 기존 루프 시작
     if not hourly_trade_loop.is_running(): hourly_trade_loop.start()
     if not auto_retraining_loop.is_running(): auto_retraining_loop.start()
     if not heartbeat_loop.is_running(): heartbeat_loop.start()
-
-    # [NEW] 펀딩비 동기화 루프 실행 (Trader 내부에 while True로 구현됨)
-    # 별도의 Task로 실행하여 메인 루프 차단 방지
+    
+    # [NEW] 펀딩비 동기화 루프 실행 (비동기 태스크로 등록)
     if bot.trader:
-        bot.loop.create_task(bot.trader.sync_funding_fee_loop())
+        asyncio.create_task(bot.trader.sync_funding_fee_loop())
 
 @bot.command(name="상태", aliases=["status"])
 async def status(ctx):
     if not is_admin(ctx): return
     if not bot.trader: return
+    
+    # [Modified] await 추가
     free, total = await bot.trader.get_balance()
     positions = await bot.trader.get_positions()
+    
     mode = bot.trader.mode
     embed = discord.Embed(title=f"📊 상태 ({mode})", color=0x3498db)
     embed.add_field(name="💰 자산", value=f"${total:,.2f} (가용: ${free:,.2f})", inline=False)
@@ -170,24 +178,28 @@ async def status(ctx):
 @bot.command(name="실매매시작")
 async def start_real(ctx):
     if not is_admin(ctx): return
+    # [Modified] await 추가
     msg = await bot.trader.set_mode('REAL')
     await ctx.send(msg)
 
 @bot.command(name="모의매매시작")
 async def start_paper(ctx):
     if not is_admin(ctx): return
+    # [Modified] await 추가
     msg = await bot.trader.set_mode('PAPER')
     await ctx.send(msg)
 
 @bot.command(name="정지", aliases=["stop"])
 async def stop_bot(ctx):
     if not is_admin(ctx): return
+    # [Modified] await 추가
     msg = await bot.trader.set_mode('OFF')
     await ctx.send(msg)
 
 @bot.command(name="청산", aliases=["close"])
 async def cmd_close(ctx, symbol: str):
     if not is_admin(ctx): return
+    # [Modified] await 추가
     result = await bot.trader.safe_force_close(symbol)
     await ctx.send(result)
 
@@ -200,7 +212,6 @@ is_backtesting = False
 async def cmd_backtest(ctx, symbol: str = "BTC/USDT", test_days: int = 30, train_days: int = 365, initial_cash: float = 10000.0):
     """
     단일 코인 백테스팅 (데이터 업데이트 포함)
-    사용법: !백테 [코인] [검증일수] [학습일수] [초기자본]
     """
     global is_backtesting
     if not is_admin(ctx): return
@@ -218,6 +229,7 @@ async def cmd_backtest(ctx, symbol: str = "BTC/USDT", test_days: int = 30, train
 
     try:
         loop = asyncio.get_running_loop()
+        # 백테스트는 CPU 연산이 많으므로 Executor에서 실행
         result = await loop.run_in_executor(
             None, 
             lambda: backtest_runner.run_walk_forward(
@@ -316,10 +328,10 @@ async def start_discord_bot(shared_trader, shared_hub):
         if not hourly_trade_loop.is_running(): hourly_trade_loop.start()
         if not auto_retraining_loop.is_running(): auto_retraining_loop.start()
         
-        # [NEW] 디스코드 비활성 상태에서도 펀딩비 동기화 루프는 실행해야 함
+        # [Modified] 펀딩비 루프 실행 (비동기)
         if shared_trader:
             asyncio.create_task(shared_trader.sync_funding_fee_loop())
-            
+        
         return
 
     shared_hub.register_discord_bot(bot)

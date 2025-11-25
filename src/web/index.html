@@ -322,7 +322,7 @@
             );
         };
 // ------------------------------------------------------------------
-        // [Component] Backtest Lab (Updated: Mobile Modal & Desktop Tooltip)
+        // [Component] Backtest Lab (Final: Carousel, History Replay, Modal)
         // ------------------------------------------------------------------
         const BacktestLab = () => {
             const [params, setParams] = useState({
@@ -336,27 +336,34 @@
             const [history, setHistory] = useState([]);
             const [loading, setLoading] = useState(false);
             const [result, setResult] = useState(null);
-            
-            // [Desktop] 툴팁 상태 (클릭된 ID)
-            const [activeTooltipId, setActiveTooltipId] = useState(null);
-            // [Mobile] 모달 데이터 (설정값 객체)
-            const [mobileModalData, setMobileModalData] = useState(null);
+
+            // [Chart State]
+            const [graphList, setGraphList] = useState([]); // [{ label: 'BTC', data: [...] }, ...]
+            const [currentGraphIndex, setCurrentGraphIndex] = useState(0);
+
+            // [UI State]
+            const [activeTooltipId, setActiveTooltipId] = useState(null); // Desktop Tooltip
+            const [mobileModalData, setMobileModalData] = useState(null); // Mobile Modal
 
             const chartRef = useRef(null);
             const chartInstance = useRef(null);
 
-            // 데스크탑 툴팁 토글
-            const toggleTooltip = (id) => {
-                setActiveTooltipId(prev => (prev === id ? null : id));
-            };
+            const toggleTooltip = (id) => setActiveTooltipId(prev => (prev === id ? null : id));
 
+            // [Helper] JSON Formatting
             const formatParams = (p) => {
                 if (!p) return "설정 정보 없음";
+                let data = p;
+                if (typeof p === 'string') {
+                    try { data = JSON.parse(p); } catch (e) { return p; }
+                }
+                if (typeof data !== 'object' || data === null) return String(data);
+
                 const ignoredKeys = ['DATA_DIR', 'MODELS_DIR', 'BASE_DIR', 'DB_PATH', 'FETCHER_INTERVAL'];
-                return Object.entries(p)
+                return Object.entries(data)
                     .filter(([key]) => !ignoredKeys.some(k => key.includes(k)))
                     .map(([key, val]) => {
-                        const displayVal = Array.isArray(val) ? `[${val.join(', ')}]` : val;
+                        const displayVal = Array.isArray(val) ? `[${val.join(', ')}]` : (typeof val === 'object' ? JSON.stringify(val) : val);
                         return `${key}: ${displayVal}`;
                     })
                     .join('\n');
@@ -386,19 +393,72 @@
                 setParams(p => ({ ...p, custom_settings: { ...p.custom_settings, [name]: Number(value) } }));
             };
 
+            // [Action] Run Backtest
             const runExperiment = async () => {
                 if(loading) return;
                 setLoading(true);
                 setResult(null);
-                setActiveTooltipId(null);
+                setGraphList([]);
                 try {
                     const payload = { ...params, initial_cash: Number(params.initial_cash), train_days: Number(params.train_days), test_days: Number(params.test_days), custom_settings: params.custom_settings };
                     const res = await axios.post('/api/backtest/run_custom', payload);
-                    setResult({ ...res.data, type: params.is_batch ? 'batch' : 'single' });
+                    const data = res.data;
+                    
+                    setResult({ ...data, type: params.is_batch ? 'batch' : 'single' });
+
+                    // Run 직후에는 즉시 그래프를 보여줄 데이터가 없을 수 있음 (특히 Batch의 경우)
+                    // Single의 경우 equity_curve가 반환되므로 바로 표시 가능
+                    let graphs = [];
+                    if (data.equity_curve) {
+                        graphs = [{ label: data.symbol, data: data.equity_curve }];
+                    }
+                    // Batch의 경우 details에 개별 데이터가 있지만, 전체를 보려면 History에서 로드하는 것이 나을 수 있음.
+                    // 우선 Single Run일 때만 바로 그래프 셋팅
+                    if (graphs.length > 0) {
+                        setGraphList(graphs);
+                        setCurrentGraphIndex(0);
+                    }
+
                     const histRes = await axios.get('/api/backtest/history');
                     setHistory(histRes.data);
+                    
+                    if (params.is_batch) {
+                        alert("배치 테스트 완료. 히스토리에서 항목을 선택하여 상세 그래프를 확인하세요.");
+                    }
+
                 } catch(e) { alert("Error: " + e.message); } 
                 finally { setLoading(false); }
+            };
+
+            // [Action] Fetch Historical Graph (Replay) - Modified for Multi-Graph Support
+            const fetchGraphData = async (record) => {
+                try {
+                    setLoading(true);
+                    setResult({
+                        symbol: record.symbol,
+                        roi: record.roi,
+                        mdd: record.mdd,
+                        type: 'history'
+                    });
+                    
+                    const res = await axios.get(`/api/backtest/result/${record.id}`);
+                    const responseData = res.data; 
+                    
+                    // [핵심 변경] 응답 데이터가 다중 그래프(객체 배열)인지 단일 그래프(데이터 배열)인지 확인
+                    if (Array.isArray(responseData) && responseData.length > 0 && responseData[0].label) {
+                        // New Format: [{label: 'Total', data: [...]}, {label: 'BTC', data: [...]}]
+                        setGraphList(responseData);
+                    } else {
+                        // Legacy Format: [{time:..., value:...}]
+                        setGraphList([{ label: record.symbol, data: responseData }]);
+                    }
+                    
+                    setCurrentGraphIndex(0);
+                } catch(e) {
+                    alert("그래프 데이터를 불러올 수 없습니다 (파일이 없거나 손상됨).");
+                } finally {
+                    setLoading(false);
+                }
             };
 
             const deleteRecord = async (id) => {
@@ -406,22 +466,69 @@
                 try { await axios.delete(`/api/backtest/history/${id}`); setHistory(prev => prev.filter(item => item.id !== id)); } catch(e){}
             };
 
+            // [Chart Renderer]
             useEffect(() => {
-                if (result && result.equity_curve && chartRef.current) {
+                if (graphList.length > 0 && chartRef.current) {
+                    const currentGraph = graphList[currentGraphIndex];
+                    if (!currentGraph || !currentGraph.data) return;
+
                     if (chartInstance.current) chartInstance.current.destroy();
+                    
                     const ctx = chartRef.current.getContext('2d');
-                    if (result.type === 'single') {
-                        chartInstance.current = new Chart(ctx, {
-                            type: 'line',
-                            data: {
-                                labels: result.equity_curve.map(d => d.time),
-                                datasets: [{ label: 'Equity', data: result.equity_curve.map(d => d.value), borderColor: '#3b82f6', backgroundColor: 'rgba(59, 130, 246, 0.1)', fill: true, tension: 0.1, pointRadius: 0 }]
-                            },
-                            options: { responsive: true, maintainAspectRatio: false, scales: { x: { display: false }, y: { grid: { color: '#374151' } } } }
-                        });
-                    }
+                    const labels = currentGraph.data.map(d => d.time);
+                    const values = currentGraph.data.map(d => d.value);
+                    
+                    // Color logic
+                    const startVal = values[0] || 0;
+                    const endVal = values[values.length - 1] || 0;
+                    const isPositive = endVal >= startVal;
+                    const color = isPositive ? '#34d399' : '#f87171';
+                    const bg = isPositive ? 'rgba(52, 211, 153, 0.1)' : 'rgba(248, 113, 113, 0.1)';
+
+                    chartInstance.current = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: labels,
+                            datasets: [{ 
+                                label: currentGraph.label, 
+                                data: values, 
+                                borderColor: color, 
+                                backgroundColor: bg, 
+                                fill: true, 
+                                tension: 0.1, 
+                                pointRadius: 0,
+                                borderWidth: 2
+                            }]
+                        },
+                        options: { 
+                            responsive: true, 
+                            maintainAspectRatio: false, 
+                            scales: { x: { display: false }, y: { grid: { color: '#374151' } } },
+                            plugins: { 
+                                legend: { display: false }, 
+                                tooltip: { 
+                                    mode: 'index', 
+                                    intersect: false,
+                                    callbacks: {
+                                        label: function(context) {
+                                            let label = context.dataset.label || '';
+                                            if (label) { label += ': '; }
+                                            if (context.parsed.y !== null) {
+                                                label += new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(context.parsed.y);
+                                            }
+                                            return label;
+                                        }
+                                    }
+                                } 
+                            }
+                        }
+                    });
                 }
-            }, [result]);
+            }, [graphList, currentGraphIndex]);
+
+            // Carousel Handlers
+            const nextGraph = () => setCurrentGraphIndex(prev => (prev + 1) % graphList.length);
+            const prevGraph = () => setCurrentGraphIndex(prev => (prev - 1 + graphList.length) % graphList.length);
 
             const InputGroup = ({ label, name, val, step="1" }) => (
                 <div>
@@ -432,7 +539,7 @@
 
             return (
                 <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 animate-fade-in pb-24 md:pb-0 md:h-[calc(100vh-200px)] md:min-h-[800px]">
-                    {/* [Left] Config Panel */}
+                    {/* [Left] Configuration */}
                     <div className="xl:col-span-4 bg-gray-800 p-5 rounded-xl shadow-lg border border-gray-700 flex flex-col overflow-y-auto custom-scroll">
                         <h2 className="text-lg font-bold text-white mb-4 flex items-center gap-2"><i className="ph ph-flask text-purple-400"></i> 전략 설정</h2>
                         <div className="space-y-4 flex-1">
@@ -455,15 +562,28 @@
                         </div>
                     </div>
 
-                    {/* [Right] Results */}
+                    {/* [Right] Results & Chart */}
                     <div className="xl:col-span-8 space-y-4 md:space-y-6 flex flex-col h-full overflow-hidden">
-                        {/* Chart */}
+                        {/* Chart Area with Carousel */}
                         <div className="bg-gray-800 p-4 md:p-6 rounded-xl shadow-lg border border-gray-700 flex-none h-[300px] md:h-[400px] flex flex-col">
-                             <h3 className="text-base md:text-lg font-semibold text-gray-300 mb-2 flex items-center gap-2"><i className="ph ph-trend-up text-blue-400"></i> 결과</h3>
-                            <div className="flex-1 relative bg-gray-900/50 rounded-lg border border-gray-700/50">
-                                {result ? <canvas ref={chartRef}></canvas> : <div className="flex items-center justify-center h-full text-gray-600 text-sm">실행 결과 대기 중...</div>}
+                            <div className="flex justify-between items-center mb-2">
+                                <h3 className="text-base md:text-lg font-semibold text-gray-300 flex items-center gap-2"><i className="ph ph-trend-up text-blue-400"></i> 결과 분석</h3>
+                                {/* Carousel Controls */}
+                                {graphList.length > 1 && (
+                                    <div className="flex items-center gap-2 bg-gray-900 rounded-lg p-1 text-sm">
+                                        <button onClick={prevGraph} className="px-2 py-1 hover:text-white text-gray-400"><i className="ph-bold ph-caret-left"></i></button>
+                                        <span className="font-bold text-blue-400 w-[150px] text-center truncate">{graphList[currentGraphIndex]?.label}</span>
+                                        <button onClick={nextGraph} className="px-2 py-1 hover:text-white text-gray-400"><i className="ph-bold ph-caret-right"></i></button>
+                                        <span className="text-xs text-gray-500 ml-2">({currentGraphIndex + 1}/{graphList.length})</span>
+                                    </div>
+                                )}
+                                {graphList.length === 1 && <span className="font-bold text-blue-400 text-sm">{graphList[0].label}</span>}
                             </div>
-                            {result && (<div className="mt-3 flex gap-3 text-xs md:text-sm overflow-x-auto whitespace-nowrap scrollbar-hide"><span className="bg-gray-900 px-2 py-1 rounded border border-gray-700">ROI <b className={result.roi>=0||result.portfolio_roi>=0?"text-green-400":"text-red-400"}>{result.type==='batch'?result.portfolio_roi:result.roi}%</b></span><span className="bg-gray-900 px-2 py-1 rounded border border-gray-700">MDD <b className="text-red-400">-{result.type==='batch'?result.avg_mdd:result.mdd}%</b></span></div>)}
+
+                            <div className="flex-1 relative bg-gray-900/50 rounded-lg border border-gray-700/50">
+                                {graphList.length > 0 ? <canvas ref={chartRef}></canvas> : <div className="flex items-center justify-center h-full text-gray-600 text-sm">실행 결과 또는 이력을 선택하세요.</div>}
+                            </div>
+                            {result && (<div className="mt-3 flex gap-3 text-xs md:text-sm overflow-x-auto whitespace-nowrap scrollbar-hide"><span className="bg-gray-900 px-2 py-1 rounded border border-gray-700">ROI <b className={result.roi>=0?"text-green-400":"text-red-400"}>{result.roi}%</b></span><span className="bg-gray-900 px-2 py-1 rounded border border-gray-700">MDD <b className="text-red-400">-{result.mdd}%</b></span></div>)}
                         </div>
 
                         {/* History List */}
@@ -471,44 +591,41 @@
                             <h3 className="text-base md:text-lg font-semibold text-gray-300 mb-4"><i className="ph ph-clock-counter-clockwise text-yellow-400"></i> 이력</h3>
                             <div className="flex-1 overflow-auto custom-scroll bg-gray-900 rounded-lg border border-gray-700 p-2">
                                 
-                                {/* [Mobile] Card View with Modal Trigger */}
+                                {/* [Mobile] Card View */}
                                 <div className="md:hidden space-y-2">
                                     {history.map(row => (
                                         <div key={row.id} className="bg-gray-800 p-3 rounded border border-gray-700 flex justify-between items-center">
                                             <div>
-                                                <div className="font-bold text-white text-sm">{row.symbol}</div>
-                                                <div className="text-[10px] text-gray-500">{row.timestamp.substring(5,16)}</div>
+                                                <button onClick={() => fetchGraphData(row)} className="text-left font-bold text-white text-sm hover:text-blue-400 underline decoration-dotted underline-offset-4">{row.symbol}</button>
+                                                <div className="text-[10px] text-gray-500 mt-1">{row.timestamp.substring(5,16)}</div>
                                             </div>
                                             <div className="flex items-center gap-3">
                                                 <div className="text-right mr-2">
                                                     <div className={`font-bold text-sm ${row.roi>=0?'text-green-400':'text-red-400'}`}>{row.roi}%</div>
                                                 </div>
-                                                
-                                                {/* Modal Trigger Button */}
-                                                <button onClick={() => setMobileModalData(row.params)} className="text-lg text-blue-400">
-                                                    <i className="ph-bold ph-info"></i>
-                                                </button>
-
+                                                <button onClick={() => setMobileModalData(row.params)} className="text-lg text-blue-400"><i className="ph-bold ph-info"></i></button>
                                                 <button onClick={()=>deleteRecord(row.id)} className="text-red-400"><i className="ph-bold ph-trash text-lg"></i></button>
                                             </div>
                                         </div>
                                     ))}
                                 </div>
 
-                                {/* [Desktop] Table View with Click-Toggle Tooltip */}
+                                {/* [Desktop] Table View */}
                                 <table className="hidden md:table w-full text-xs text-left text-gray-400">
                                     <thead className="uppercase bg-gray-800 sticky top-0">
                                         <tr><th className="p-3">Time</th><th className="p-3">Symbol</th><th className="p-3">ROI</th><th className="p-3">MDD</th><th className="p-3 text-center">Settings</th><th className="p-3 text-right">Actions</th></tr>
                                     </thead>
                                     <tbody>
                                         {history.map(row => (
-                                            <tr key={row.id} className="hover:bg-gray-800/50 border-b border-gray-800">
+                                            <tr key={row.id} className="hover:bg-gray-800/50 border-b border-gray-800 transition">
                                                 <td className="p-3">{row.timestamp.substring(5,16)}</td>
-                                                <td className="p-3 font-bold text-white">{row.symbol}</td>
+                                                <td className="p-3">
+                                                    <button onClick={() => fetchGraphData(row)} className="font-bold text-white hover:text-blue-400 hover:underline">{row.symbol}</button>
+                                                </td>
                                                 <td className={`p-3 font-bold ${row.roi>=0?'text-green-400':'text-red-400'}`}>{row.roi}%</td>
                                                 <td className="p-3 text-red-400">-{row.mdd}%</td>
                                                 
-                                                {/* Tooltip Logic */}
+                                                {/* Desktop Tooltip */}
                                                 <td className="p-3 text-center relative">
                                                     <button onClick={() => toggleTooltip(row.id)} className={`text-lg transition ${activeTooltipId===row.id ? 'text-white':'text-gray-500 hover:text-blue-400'}`}>
                                                         <i className="ph-bold ph-info"></i>
