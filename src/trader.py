@@ -577,6 +577,7 @@ class BinanceTrader:
                             
                             await self._upsert_position_to_db(symbol, exec_price, exec_price, exec_price, signal, qty, target_regime, sl_price)
                             await self.notification.log(f"🚀 [{symbol}] {signal.upper()} 진입 @ {exec_price}", level="INFO")
+                            current_pos_count += 1
 
             return "✅ 매매 로직 실행 완료"
 
