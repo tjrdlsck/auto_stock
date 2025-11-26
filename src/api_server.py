@@ -2,12 +2,13 @@ import os
 import sys
 import asyncio
 import json
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import uvicorn
+from datetime import datetime
 
 # 프로젝트 모듈 임포트
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -38,7 +39,7 @@ class BacktestParams(BaseModel):
 
 class CustomBacktestParams(BacktestParams):
     custom_settings: Dict[str, Any] = {}
-    is_real_portfolio: bool = False # [NEW] 리얼 포트폴리오 모드 플래그 추가
+    is_real_portfolio: bool = False 
 
 class BalanceReset(BaseModel):
     amount: float
@@ -90,12 +91,19 @@ async def reset_config():
 # ---------------------------------------------------------
 @app.get("/api/status")
 async def get_status():
-    """봇의 현재 상태 조회"""
+    """봇의 현재 상태 조회 (초기 자본금 포함)"""
     trader = get_trader()
     
+    # [Modified] 증거금이 차감된 free balance와 전체 total balance 가져오기
     free, total = await trader.get_balance()
     positions = await trader.get_positions()
     saved_paper_bal = await trader.get_saved_paper_balance()
+    
+    # ------------------------------------------------------------------
+    # [FIX] 수정됨: 모드(REAL/PAPER/OFF)에 따라 알맞은 초기 자금을 가져옴
+    # 기존: await trader.get_saved_paper_initial_balance()
+    # ------------------------------------------------------------------
+    saved_initial_bal = await trader.get_initial_balance()
     
     discord_active = False
     if hasattr(app.state, 'hub') and app.state.hub.discord_bot:
@@ -105,6 +113,7 @@ async def get_status():
         "mode": trader.mode,
         "balance": {"free": free, "total": total},
         "paper_balance": saved_paper_bal,
+        "initial_balance": saved_initial_bal, # 이제 OFF면 0, REAL이면 스냅샷 잔고가 반환됨
         "positions": positions,
         "discord_active": discord_active
     }
@@ -161,12 +170,11 @@ async def run_custom_backtest(params: CustomBacktestParams):
     hub = get_hub()
     trader = get_trader()
     
-    # 1. 동적 설정 생성 (기본 설정 + 커스텀 설정 병합)
+    # 1. 동적 설정 생성
     current_config = trader.config_manager.get_all().copy()
     if params.custom_settings:
         current_config.update(params.custom_settings)
         
-    # 입력받은 학습/테스트 기간을 설정 정보에 포함
     current_config['TRAIN_DAYS'] = params.train_days
     current_config['TEST_DAYS'] = params.test_days
     
@@ -183,9 +191,8 @@ async def run_custom_backtest(params: CustomBacktestParams):
     loop = asyncio.get_running_loop()
     
     try:
-        # 2. 실행 분기 (CPU Bound 작업이므로 Executor에서 실행)
+        # 2. 실행 분기 (CPU Bound -> Executor)
         if params.is_real_portfolio:
-            # [NEW] 리얼 포트폴리오 모드 실행
             result = await loop.run_in_executor(
                 None,
                 lambda: backtest_runner.run_real_portfolio_backtest(
@@ -197,10 +204,9 @@ async def run_custom_backtest(params: CustomBacktestParams):
                     dynamic_config=current_config
                 )
             )
-            # 결과 저장
             if "error" not in result:
                 save_data = {
-                    "symbol": "REAL_PF", # 구분자
+                    "symbol": "REAL_PF",
                     "params": current_config,
                     "roi": result.get('portfolio_roi', 0),
                     "mdd": result.get('avg_mdd', 0),
@@ -212,7 +218,6 @@ async def run_custom_backtest(params: CustomBacktestParams):
                 await trader.save_backtest_result(save_data)
 
         elif params.is_batch:
-            # 기존 단순 배치 실행
             result = await loop.run_in_executor(
                 None,
                 lambda: backtest_runner.run_batch_backtest(
@@ -224,7 +229,6 @@ async def run_custom_backtest(params: CustomBacktestParams):
                     dynamic_config=current_config
                 )
             )
-            # 배치 결과 저장
             if "error" not in result:
                 save_data = {
                     "symbol": "BATCH_SUM",
@@ -239,7 +243,6 @@ async def run_custom_backtest(params: CustomBacktestParams):
                 await trader.save_backtest_result(save_data)
 
         else:
-            # 단일 코인 실행
             result = await loop.run_in_executor(
                 None,
                 lambda: backtest_runner.run_walk_forward(
@@ -252,7 +255,6 @@ async def run_custom_backtest(params: CustomBacktestParams):
                     dynamic_config=current_config
                 )
             )
-            # 단일 결과 저장
             if "error" not in result:
                 await trader.save_backtest_result(result)
             
@@ -277,10 +279,9 @@ async def delete_backtest_history(record_id: int):
     await trader.delete_backtest_record(record_id)
     return {"status": "success", "message": "Deleted"}
 
-# [NEW] 저장된 백테스트 결과 데이터(차트용) 조회
 @app.get("/api/backtest/result/{record_id}")
 async def get_backtest_result(record_id: int):
-    """특정 백테스트 레코드의 상세 데이터(Equity Curve 등) 반환"""
+    """특정 백테스트 레코드 상세 조회"""
     trader = get_trader()
     data = await trader.get_backtest_result_data(record_id)
     
@@ -291,31 +292,59 @@ async def get_backtest_result(record_id: int):
 
 @app.get("/api/backtest/download/{record_id}")
 async def download_backtest_csv(record_id: int):
-    """백테스트 파일(CSV 또는 ZIP) 다운로드"""
+    """백테스트 파일(CSV/ZIP) 다운로드"""
     trader = get_trader()
-    
     history = await trader.get_backtest_history()
     target = next((item for item in history if item["id"] == record_id), None)
-    
-    if not target:
-        raise HTTPException(status_code=404, detail="Record not found")
-        
+    if not target: raise HTTPException(status_code=404, detail="Record not found")
     file_path = target.get("csv_path")
-    if not file_path or not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File not found")
-    
+    if not file_path or not os.path.exists(file_path): raise HTTPException(status_code=404, detail="File not found")
     filename = os.path.basename(file_path)
     media_type = 'application/zip' if filename.endswith('.zip') else 'text/csv'
-        
     return FileResponse(path=file_path, filename=filename, media_type=media_type)
 
 # ---------------------------------------------------------
 # [Routes] 4. WebSocket & Static Files
 # ---------------------------------------------------------
+# ---------------------------------------------------------
+# [Routes] 4. History & WebSocket & Static Files
+# ---------------------------------------------------------
+
 @app.get("/api/history")
 async def get_history(mode: str = "PAPER"):
+    """
+    거래 이력 조회 API
+    Query Param: mode (REAL 또는 PAPER)
+    """
     trader = get_trader()
+    # trader.py에서 모드에 맞는 데이터를 필터링해서 가져옴
     return await trader.get_trade_history(target_mode=mode)
+
+@app.get("/api/history/download")
+async def download_history_csv(mode: str = "PAPER"):
+    """
+    [NEW] 거래 이력 CSV 다운로드 API
+    Query Param: mode (REAL 또는 PAPER)
+    """
+    trader = get_trader()
+    
+    # 1. CSV 데이터 생성 (Phase 1에서 trader.py에 구현함)
+    csv_content = await trader.export_history_csv(target_mode=mode)
+    
+    if not csv_content:
+        # 데이터가 없을 경우 빈 CSV라도 반환하거나 404 처리 (여기선 빈 파일 반환)
+        csv_content = ""
+
+    # 2. 파일명 생성 (예: Trade_History_REAL_20231126.csv)
+    current_date = datetime.now().strftime("%Y%m%d")
+    filename = f"Trade_History_{mode}_{current_date}.csv"
+    
+    # 3. 브라우저가 파일로 인식하도록 헤더 설정하여 응답
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
 
 @app.websocket("/ws/logs")
 async def websocket_endpoint(websocket: WebSocket):

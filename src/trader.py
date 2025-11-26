@@ -8,9 +8,9 @@ import ccxt.async_support as ccxt
 from datetime import datetime
 import asyncio
 import aiosqlite
-import zipfile 
-import io      
-import sqlite3 
+import zipfile
+import io
+import sqlite3
 from dotenv import load_dotenv
 from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 
@@ -102,6 +102,7 @@ class BinanceTrader:
     # -----------------------------------------------------------
     async def _init_db(self):
         async with aiosqlite.connect(self.db_path) as db:
+            # 포지션 테이블 (entry_time 추가됨)
             await db.execute('''
                 CREATE TABLE IF NOT EXISTS positions (
                     symbol TEXT,
@@ -112,15 +113,18 @@ class BinanceTrader:
                     side TEXT,
                     amount REAL,
                     entry_regime TEXT,
-                    stop_loss_price REAL DEFAULT 0.0
+                    stop_loss_price REAL DEFAULT 0.0,
+                    entry_time TEXT
                 )
             ''')
+            # 시스템 설정 테이블
             await db.execute('''
                 CREATE TABLE IF NOT EXISTS system_settings (
                     key TEXT PRIMARY KEY,
                     value TEXT
                 )
             ''')
+            # 거래 기록 테이블 (분석 컬럼 대거 추가)
             await db.execute('''
                 CREATE TABLE IF NOT EXISTS trade_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -134,9 +138,15 @@ class BinanceTrader:
                     fee REAL,
                     pnl REAL,
                     trade_id TEXT UNIQUE, 
-                    trade_type TEXT DEFAULT 'TRADE'
+                    trade_type TEXT DEFAULT 'TRADE',
+                    strategy TEXT,
+                    entry_regime TEXT,
+                    exit_reason TEXT,
+                    duration INTEGER,
+                    roi REAL
                 )
             ''')
+            # 백테스트 기록 테이블
             await db.execute('''
                 CREATE TABLE IF NOT EXISTS backtest_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -152,16 +162,31 @@ class BinanceTrader:
                 )
             ''')
             
-            # 마이그레이션
+            # [DB 마이그레이션] 기존 DB 호환성 유지를 위한 컬럼 추가
             try: await db.execute("ALTER TABLE positions ADD COLUMN entry_regime TEXT")
             except: pass
             try: await db.execute("ALTER TABLE positions ADD COLUMN stop_loss_price REAL DEFAULT 0.0")
             except: pass
             try: await db.execute("ALTER TABLE positions ADD COLUMN mode TEXT DEFAULT 'UNKNOWN'")
             except: pass
+            try: await db.execute("ALTER TABLE positions ADD COLUMN entry_time TEXT")
+            except: pass
+            
             try: await db.execute("ALTER TABLE trade_history ADD COLUMN trade_id TEXT")
             except: pass
             try: await db.execute("ALTER TABLE trade_history ADD COLUMN trade_type TEXT DEFAULT 'TRADE'")
+            except: pass
+            
+            # 신규 분석 컬럼 추가
+            try: await db.execute("ALTER TABLE trade_history ADD COLUMN strategy TEXT")
+            except: pass
+            try: await db.execute("ALTER TABLE trade_history ADD COLUMN entry_regime TEXT")
+            except: pass
+            try: await db.execute("ALTER TABLE trade_history ADD COLUMN exit_reason TEXT")
+            except: pass
+            try: await db.execute("ALTER TABLE trade_history ADD COLUMN duration INTEGER")
+            except: pass
+            try: await db.execute("ALTER TABLE trade_history ADD COLUMN roi REAL")
             except: pass
 
             await db.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('mode', 'OFF')")
@@ -184,8 +209,9 @@ class BinanceTrader:
 
     async def _load_positions_from_db(self):
         async with aiosqlite.connect(self.db_path) as db:
+            # entry_time 컬럼 추가 조회
             async with db.execute("""
-                SELECT symbol, entry_price, highest_price, lowest_price, side, amount, entry_regime, stop_loss_price 
+                SELECT symbol, entry_price, highest_price, lowest_price, side, amount, entry_regime, stop_loss_price, entry_time 
                 FROM positions 
                 WHERE mode = ?
             """, (self.mode,)) as cursor:
@@ -193,7 +219,8 @@ class BinanceTrader:
         
         state = {}
         for row in rows:
-            symbol, entry_price, highest_price, lowest_price, side, amount, entry_regime, stop_loss_price = row
+            # Unpacking에 entry_time 추가
+            symbol, entry_price, highest_price, lowest_price, side, amount, entry_regime, stop_loss_price, entry_time = row
             state[symbol] = {
                 'entry_price': entry_price,
                 'high': highest_price,
@@ -201,17 +228,26 @@ class BinanceTrader:
                 'side': side,
                 'amount': amount,
                 'entry_regime': entry_regime,
-                'stop_loss_price': stop_loss_price
+                'stop_loss_price': stop_loss_price,
+                'entry_time': entry_time  # 상태 딕셔너리에 저장
             }
         return state
 
-    async def _upsert_position_to_db(self, symbol, entry_price, highest_price, lowest_price, side, amount, entry_regime, stop_loss_price):
+    async def _upsert_position_to_db(self, symbol, entry_price, highest_price, lowest_price, side, amount, entry_regime, stop_loss_price, entry_time=None):
+        # entry_time 인자 추가 및 저장 로직 반영
+        if entry_time is None:
+            # 기존에 시간이 있으면 유지, 없으면 현재 시간 (새로 진입 시)
+            if symbol in self.state and 'entry_time' in self.state[symbol]:
+                entry_time = self.state[symbol]['entry_time']
+            else:
+                entry_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("DELETE FROM positions WHERE symbol = ? AND mode = ?", (symbol, self.mode))
             await db.execute('''
-                INSERT INTO positions (symbol, mode, entry_price, highest_price, lowest_price, side, amount, entry_regime, stop_loss_price)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (symbol, self.mode, entry_price, highest_price, lowest_price, side, amount, entry_regime, stop_loss_price))
+                INSERT INTO positions (symbol, mode, entry_price, highest_price, lowest_price, side, amount, entry_regime, stop_loss_price, entry_time)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (symbol, self.mode, entry_price, highest_price, lowest_price, side, amount, entry_regime, stop_loss_price, entry_time))
             await db.commit()
         
         self.state[symbol] = {
@@ -221,7 +257,8 @@ class BinanceTrader:
             'side': side,
             'amount': amount,
             'entry_regime': entry_regime,
-            'stop_loss_price': stop_loss_price
+            'stop_loss_price': stop_loss_price,
+            'entry_time': entry_time
         }
 
     async def _delete_position_from_db(self, symbol):
@@ -235,7 +272,8 @@ class BinanceTrader:
     # -----------------------------------------------------------
     # [거래 이력 저장]
     # -----------------------------------------------------------
-    async def _save_trade_history(self, symbol, side, entry_price, exit_price, amount, real_fee=None, trade_type='TRADE'):
+    async def _save_trade_history(self, symbol, side, entry_price, exit_price, amount, real_fee=None, trade_type='TRADE', 
+                                  strategy=None, entry_regime=None, exit_reason=None, duration=0):
         if real_fee is not None:
             total_fee = real_fee
         else:
@@ -246,12 +284,23 @@ class BinanceTrader:
                 total_fee = 0.0 
 
         net_pnl = 0.0
+        roi = 0.0
+        
         if trade_type == 'TRADE':
             if side == 'buy': 
                 raw_pnl = (exit_price - entry_price) * amount
             else: 
                 raw_pnl = (entry_price - exit_price) * amount
+            
             net_pnl = raw_pnl - total_fee
+            
+            # ROI 계산 (레버리지 반영된 투입 증거금 대비 수익률)
+            # 투입 증거금 = (Entry Price * Amount) / Leverage
+            leverage = self.get_conf('LEVERAGE', 1.0)
+            invested_margin = (entry_price * amount) / leverage if leverage > 0 else (entry_price * amount)
+            if invested_margin > 0:
+                roi = (net_pnl / invested_margin) * 100
+
         elif trade_type == 'FUNDING':
             net_pnl = -total_fee
 
@@ -261,9 +310,13 @@ class BinanceTrader:
         async with aiosqlite.connect(self.db_path) as db:
             try:
                 await db.execute('''
-                    INSERT INTO trade_history (timestamp, symbol, mode, side, entry_price, exit_price, amount, fee, pnl, trade_id, trade_type)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (timestamp, symbol, self.mode, side, entry_price, exit_price, amount, total_fee, net_pnl, trade_id_val, trade_type))
+                    INSERT INTO trade_history (
+                        timestamp, symbol, mode, side, entry_price, exit_price, amount, fee, pnl, 
+                        trade_id, trade_type, strategy, entry_regime, exit_reason, duration, roi
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (timestamp, symbol, self.mode, side, entry_price, exit_price, amount, total_fee, net_pnl, 
+                      trade_id_val, trade_type, strategy, entry_regime, exit_reason, duration, roi))
             except sqlite3.IntegrityError:
                 pass
             await db.commit()
@@ -320,7 +373,39 @@ class BinanceTrader:
             "equity_curve": equity_curve,
             "trades": trades[::-1]
         }
+    
+    async def export_history_csv(self, target_mode):
+        """
+        특정 모드의 거래 기록을 CSV 포맷 문자열로 내보냅니다.
+        """
+        import pandas as pd
+        import io
+        
+        async with aiosqlite.connect(self.db_path) as db:
+            # pandas.read_sql을 쓰려면 동기 커넥션이 필요하므로, aiosqlite 대신 직접 fetch 후 변환
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT * FROM trade_history WHERE mode = ? ORDER BY id DESC", (target_mode,)) as cursor:
+                rows = await cursor.fetchall()
+                # 컬럼명 가져오기
+                columns = [description[0] for description in cursor.description]
+                
+        if not rows:
+            return ""
 
+        # 데이터프레임 생성
+        data = [dict(row) for row in rows]
+        df = pd.DataFrame(data, columns=columns)
+        
+        # 보기 좋게 컬럼 정렬 및 포맷팅 (선택 사항)
+        output_cols = ['timestamp', 'symbol', 'side', 'entry_price', 'exit_price', 'amount', 'pnl', 'roi', 'fee', 'entry_regime', 'exit_reason', 'duration']
+        # 존재하는 컬럼만 선택
+        final_cols = [c for c in output_cols if c in df.columns]
+        df = df[final_cols]
+
+        # CSV 버퍼에 쓰기
+        stream = io.StringIO()
+        df.to_csv(stream, index=False)
+        return stream.getvalue()
     # -----------------------------------------------------------
     # [Model Management] Caching & Loading
     # -----------------------------------------------------------
@@ -428,7 +513,7 @@ class BinanceTrader:
         except: return 0.0
 
     # -----------------------------------------------------------
-    # [Main Logic Loop] (Look-Ahead Bias Fix Applied)
+    # [Main Logic Loop]
     # -----------------------------------------------------------
     async def run_logic(self):
         if not self.is_initialized: await self.initialize()
@@ -448,24 +533,14 @@ class BinanceTrader:
                 df = await self.fetch_data_and_features(symbol)
                 if df is None or len(df) < 30: continue
                 
-                # ---------------------------------------------------
-                # [중요] Look-Ahead Bias(Repainting) 방지 로직 분리
-                # ---------------------------------------------------
-                
-                # 1. 실행/감시용 (Real-time)
-                # 현재 진행 중인 캔들의 가격. 손절/익절 감시 및 트레일링 스탑에 사용
+                # [Fix] Look-Ahead Bias 방지 (확정된 캔들 사용)
                 current_price = df['close'].iloc[-1] 
-                
-                # 2. 신호 판단용 (Confirmed)
-                # 직전 마감된 캔들의 데이터. 진입/청산 신호 판단에 사용
                 prev_close = df['close'].iloc[-2]
                 prev_rsi = df['RSI_14'].iloc[-2]
                 prev_ema = df[f'EMA_{self.EMA_PERIOD}'].iloc[-2]
                 prev_atr = df['ATRr_14'].iloc[-2]
 
-                # 3. Regime 판단 (Confirmed)
-                # 마지막 진행 중인 캔들(iloc[-1])을 제외하고 전달하여
-                # '확정된' 캔들 기준의 국면을 판단함.
+                # [Fix] Regime 판단도 확정 캔들 기준
                 regime, r_map = self.get_hmm_regime(df.iloc[:-1], symbol)
                 if regime is None: continue
                 
@@ -487,18 +562,16 @@ class BinanceTrader:
                     trail_dist = prev_atr * self.get_conf('TRAIL_DIST_ATR', 2.0)
                     
                     if stop_loss == 0:
-                        # 초기 스탑로스 계산 시에도 prev_atr 사용 권장
                         stop_loss = entry_price - (prev_atr * stop_atr) if side == 'buy' else entry_price + (prev_atr * stop_atr)
 
                     should_close = False
                     reason = ""
                     
-                    # 1. 하드 스탑 & 트레일링 스탑 실행 (실시간 가격 기준)
-                    # 손절은 즉각 반응해야 하므로 current_price 사용
+                    # 1. 하드 스탑 (실시간 가격)
                     if side == 'buy' and current_price < stop_loss: should_close = True; reason = "StopLoss"
                     elif side == 'sell' and current_price > stop_loss: should_close = True; reason = "StopLoss"
                     
-                    # 2. 트레일링 스탑 '업데이트' (실시간 고가/저가 기준)
+                    # 2. 트레일링 스탑 (실시간 가격)
                     if not should_close:
                         updated = False
                         if side == 'buy':
@@ -517,7 +590,7 @@ class BinanceTrader:
                         if updated:
                             await self._upsert_position_to_db(symbol, entry_price, high_price, low_price, side, amount, entry_regime, stop_loss)
 
-                    # 3. 국면 전환 및 전략적 청산 (확정된 신호 기준)
+                    # 3. 국면 전환 (확정 캔들)
                     if not should_close:
                         if (entry_regime == 'bull' and regime == r_map['bear']) or \
                            (entry_regime == 'bear' and regime == r_map['bull']):
@@ -525,13 +598,31 @@ class BinanceTrader:
 
                     if should_close:
                         close_side = 'sell' if side == 'buy' else 'buy'
-                        # 청산 주문은 현재가 기준으로 실행
                         exec_price, order_id = await self.execute_order(symbol, close_side, amount, reduce_only=True)
                         
                         if exec_price:
                             real_fee = await self._fetch_real_commission(symbol, order_id)
-                            pnl, _ = await self._save_trade_history(symbol, side, entry_price, exec_price, amount, real_fee=real_fee)
-                            await self.notification.log(f"💰 [{symbol}] 익절/손절 ({reason}) PnL: ${pnl:.2f}", level="INFO")
+                            
+                            # [수정됨] 보유 시간(분) 계산
+                            duration_min = 0
+                            try:
+                                entry_time_str = pos_data.get('entry_time')
+                                if entry_time_str:
+                                    et = datetime.strptime(entry_time_str, '%Y-%m-%d %H:%M:%S')
+                                    duration_min = int((datetime.now() - et).total_seconds() / 60)
+                            except: pass
+
+                            # [수정됨] 상세 정보 포함하여 저장
+                            pnl, _ = await self._save_trade_history(
+                                symbol, side, entry_price, exec_price, amount, 
+                                real_fee=real_fee, 
+                                strategy="HMM_Strategy",
+                                entry_regime=entry_regime,
+                                exit_reason=reason,
+                                duration=duration_min
+                            )
+                            
+                            await self.notification.log(f"💰 [{symbol}] 익절/손절 ({reason}) PnL: ${pnl:.2f} (Duration: {duration_min}m)", level="INFO")
                             await self._delete_position_from_db(symbol)
                             self.cooldowns[symbol] = self.COOLDOWN_BARS
                         continue
@@ -549,7 +640,7 @@ class BinanceTrader:
                     signal = None
                     target_regime = None
 
-                    # 진입 판단: 확정된 캔들(prev_) 사용
+                    # [Fix] 확정 캔들 기준 진입 판단
                     if regime == r_map['bull']:
                         if prev_close > prev_ema and rsi_buy_low < prev_rsi < rsi_buy_high:
                             signal = 'buy'; target_regime = 'bull'
@@ -565,18 +656,26 @@ class BinanceTrader:
                         balance = total_equity
                         max_pos = self.get_conf('MAX_OPEN_POSITIONS', 3)
                         allocation = (balance / max_pos) * 0.95
-                        # 수량 계산은 현재가(current_price) 기준이 정확함
                         qty = (allocation * leverage) / current_price
                         
                         exec_price, order_id = await self.execute_order(symbol, signal, qty)
                         if exec_price:
                             stop_atr = self.get_conf('STOP_LOSS_ATR', 2.0)
-                            # 초기 손절폭은 변동성이 확정된 prev_atr 사용
                             sl_dist = prev_atr * stop_atr
                             sl_price = exec_price - sl_dist if signal == 'buy' else exec_price + sl_dist
                             
-                            await self._upsert_position_to_db(symbol, exec_price, exec_price, exec_price, signal, qty, target_regime, sl_price)
+                            # [수정됨] 현재 시간을 entry_time으로 함께 저장
+                            current_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                            
+                            await self._upsert_position_to_db(
+                                symbol, exec_price, exec_price, exec_price, signal, qty, 
+                                target_regime, sl_price, 
+                                entry_time=current_time_str  # 신규 인자 전달
+                            )
+                            
                             await self.notification.log(f"🚀 [{symbol}] {signal.upper()} 진입 @ {exec_price}", level="INFO")
+                            
+                            # [Fix] 동시 진입 방지 카운트 즉시 증가
                             current_pos_count += 1
 
             return "✅ 매매 로직 실행 완료"
@@ -600,7 +699,6 @@ class BinanceTrader:
                 print(f"Funding Sync Error: {e}")
                 await asyncio.sleep(60)
 
-    # [NEW] 백테스트 결과 데이터 조회 (CSV/ZIP) - 다중 데이터셋 지원
     async def get_backtest_result_data(self, record_id):
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute("SELECT csv_path, symbol FROM backtest_history WHERE id=?", (record_id,)) as cursor:
@@ -614,11 +712,8 @@ class BinanceTrader:
 
         try:
             results = []
-            
-            # 1. Batch Backtest (Zip) - Portfolio + Individual Coins
             if csv_path.endswith('.zip'):
                 with zipfile.ZipFile(csv_path, 'r') as z:
-                    # 1-1. Portfolio Summary (Total)
                     summary_file = next((n for n in z.namelist() if 'Portfolio_Summary.csv' in n), None)
                     if summary_file:
                         with z.open(summary_file) as f:
@@ -628,43 +723,32 @@ class BinanceTrader:
                                 data.append({"time": str(row['Date']), "value": float(row['Total_Equity'])})
                             results.append({"label": "Total Portfolio", "data": data})
                     
-                    # 1-2. Individual Coins
                     for filename in z.namelist():
                         if filename == summary_file: continue
                         if not filename.endswith('.csv'): continue
                         
-                        # 파일명 파싱 (Format: BT_{timestamp}_{symbol}.csv)
                         label = filename.replace('.csv', '')
                         parts = label.split('_')
                         if len(parts) >= 3 and parts[0] == 'BT':
                             symbol_part = "_".join(parts[3:]) 
-                            if symbol_part:
-                                label = symbol_part
+                            if symbol_part: label = symbol_part
                         
                         with z.open(filename) as f:
                             df = pd.read_csv(f)
                             val_col = 'Portfolio_Value'
-                            if val_col not in df.columns:
-                                val_col = df.columns[-1] 
-                            
+                            if val_col not in df.columns: val_col = df.columns[-1] 
                             coin_data = []
                             for _, row in df.iterrows():
                                 coin_data.append({"time": str(row['Date']), "value": float(row[val_col])})
-                            
                             results.append({"label": label, "data": coin_data})
-                
                 return results
-            
-            # 2. Single Backtest (CSV) - 기존 호환성 유지
             else:
                 df = pd.read_csv(csv_path)
                 data = []
                 val_col = 'Portfolio_Value' if 'Portfolio_Value' in df.columns else df.columns[-1]
                 for _, row in df.iterrows():
                     data.append({"time": str(row['Date']), "value": float(row[val_col])})
-            
                 return data
-                
         except Exception as e:
             print(f"Error reading backtest file: {e}")
             return None
@@ -697,33 +781,90 @@ class BinanceTrader:
             await db.execute("DELETE FROM backtest_history WHERE id=?", (rid,))
             await db.commit()
 
+    # [NEW] 초기 자본금 조회
+    async def get_saved_paper_initial_balance(self):
+        val = await self._get_setting('paper_initial_balance')
+        return float(val) if val else 10000.0
+
     async def get_saved_paper_balance(self):
         val = await self._get_setting('paper_balance')
         return float(val) if val else 10000.0
 
+    # [Modified] 초기화 시 초기 자본금도 함께 저장
     async def reset_paper_balance(self, amount):
         await self._set_setting('paper_balance', amount)
+        await self._set_setting('paper_initial_balance', amount)
         return amount
 
     async def set_mode(self, new_mode):
         if new_mode not in ['OFF', 'REAL', 'PAPER']: return "Invalid Mode"
+        
         if not self.is_initialized: await self.initialize()
+        
+        # 모드 변경 저장
         self.mode = new_mode
         await self._set_setting('mode', new_mode)
+        
+        # [NEW] REAL 모드 진입 시, 현재 실제 잔고를 '초기 자본금'으로 스냅샷 저장
+        if new_mode == 'REAL':
+            try:
+                bal = await self.exchange.fetch_balance()
+                current_total = float(bal['total']['USDT'])
+                await self._set_setting('real_initial_balance', current_total)
+                print(f"🚀 [Real] 실전 매매 시작! 초기 자본금 설정: ${current_total:.2f}")
+            except Exception as e:
+                print(f"⚠️ [Real] 초기 잔고 조회 실패: {e}")
+                # 실패 시 0으로 설정하거나 기존 값 유지
+                await self._set_setting('real_initial_balance', 0.0)
+
+        # 상태 및 모델 로드
         self.state = await self._load_positions_from_db()
-        if new_mode != 'OFF': await self.load_models()
+        if new_mode != 'OFF': 
+            await self.load_models()
+            
         msg = f"✅ 모드 변경: {new_mode}"
         await self.notification.log(msg, level="SYSTEM")
         return msg
 
+    # [Modified] 증거금 계산 로직 추가
     async def get_balance(self):
+        # [NEW] OFF 모드일 때는 잔고를 0으로 리턴하여 UI 초기화
+        if self.mode == 'OFF':
+            return 0.0, 0.0
+
         if self.mode == 'PAPER':
-            bal = await self.get_saved_paper_balance()
-            return bal, bal
+            total_bal = await self.get_saved_paper_balance()
+            
+            # 사용 중인 증거금 계산
+            used_margin = 0.0
+            leverage = self.get_conf('LEVERAGE', 1.0)
+            
+            for symbol, pos in self.state.items():
+                entry_val = pos['entry_price'] * pos['amount']
+                used_margin += entry_val / leverage
+                
+            free_bal = total_bal - used_margin
+            return free_bal, total_bal
+            
+        # REAL 모드
         try:
             bal = await self.exchange.fetch_balance()
             return bal['free']['USDT'], bal['total']['USDT']
         except: return 0.0, 0.0
+
+    # [NEW] 현재 모드에 맞는 '기준(초기) 자본금' 반환
+    async def get_initial_balance(self):
+        if self.mode == 'OFF':
+            return 0.0 # 정지 상태면 0 리턴 (수익률 0% 표시용)
+            
+        if self.mode == 'PAPER':
+            return await self.get_saved_paper_initial_balance()
+            
+        if self.mode == 'REAL':
+            val = await self._get_setting('real_initial_balance')
+            return float(val) if val else 0.0
+            
+        return 0.0
 
     async def get_positions(self):
         if self.mode != 'REAL':
@@ -762,7 +903,6 @@ class BinanceTrader:
             return "⚠️ 청산할 포지션이 없습니다."
 
         logs = []
-        # 딕셔너리 크기 변경 오류 방지를 위해 키를 리스트로 복사하여 순회
         target_symbols = list(self.state.keys())
         
         for symbol in target_symbols:

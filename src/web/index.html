@@ -1,10 +1,11 @@
 <!DOCTYPE html>
 <html lang="ko">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>QuantBot Hybrid V2</title>
-    
+
     <!-- CDN Libraries -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
@@ -16,72 +17,159 @@
 
     <style>
         /* Custom Scrollbar */
-        .custom-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
-        .custom-scroll::-webkit-scrollbar-track { background: #1f2937; }
-        .custom-scroll::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 3px; }
-        .custom-scroll::-webkit-scrollbar-thumb:hover { background: #6b7280; }
-        
-        body { background-color: #0b0f19; color: #e5e7eb; font-family: 'Inter', sans-serif; -webkit-tap-highlight-color: transparent; }
-        
+        .custom-scroll::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        .custom-scroll::-webkit-scrollbar-track {
+            background: #1f2937;
+        }
+
+        .custom-scroll::-webkit-scrollbar-thumb {
+            background: #4b5563;
+            border-radius: 3px;
+        }
+
+        .custom-scroll::-webkit-scrollbar-thumb:hover {
+            background: #6b7280;
+        }
+
+        body {
+            background-color: #0b0f19;
+            color: #e5e7eb;
+            font-family: 'Inter', sans-serif;
+            -webkit-tap-highlight-color: transparent;
+        }
+
         /* Animations */
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
-        .animate-fade-in { animation: fadeIn 0.3s ease-out forwards; }
-        
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(5px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .animate-fade-in {
+            animation: fadeIn 0.3s ease-out forwards;
+        }
+
         /* [Desktop] Tooltip Box Style */
-        .tooltip-box { 
-            position: absolute; 
-            top: 100%; right: 0; margin-top: 10px; 
-            width: 320px; max-height: 300px; overflow-y: auto; 
-            background-color: #1f2937; color: #d1d5db; text-align: left; 
-            border-radius: 8px; padding: 12px; z-index: 100; 
-            border: 1px solid #4b5563; 
+        .tooltip-box {
+            position: absolute;
+            top: 100%;
+            right: 0;
+            margin-top: 10px;
+            width: 320px;
+            max-height: 300px;
+            overflow-y: auto;
+            background-color: #1f2937;
+            color: #d1d5db;
+            text-align: left;
+            border-radius: 8px;
+            padding: 12px;
+            z-index: 100;
+            border: 1px solid #4b5563;
             box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
-            font-size: 0.75rem; white-space: pre-wrap; line-height: 1.5;
+            font-size: 0.75rem;
+            white-space: pre-wrap;
+            line-height: 1.5;
             font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
         }
-        .tooltip-box::-webkit-scrollbar { width: 6px; }
-        .tooltip-box::-webkit-scrollbar-track { background: #111827; border-radius: 3px; }
-        .tooltip-box::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 3px; }
+
+        .tooltip-box::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .tooltip-box::-webkit-scrollbar-track {
+            background: #111827;
+            border-radius: 3px;
+        }
+
+        .tooltip-box::-webkit-scrollbar-thumb {
+            background: #4b5563;
+            border-radius: 3px;
+        }
 
         /* [Mobile] Modal Style */
         .modal-overlay {
-            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
             background-color: rgba(0, 0, 0, 0.75);
             z-index: 999;
-            display: flex; justify-content: center; align-items: center;
+            display: flex;
+            justify-content: center;
+            align-items: center;
             padding: 20px;
             backdrop-filter: blur(2px);
         }
+
         .modal-content {
             background-color: #1f2937;
             border: 1px solid #374151;
             border-radius: 12px;
-            width: 100%; max-width: 400px; max-height: 80vh;
-            display: flex; flex-direction: column;
+            width: 100%;
+            max-width: 400px;
+            max-height: 80vh;
+            display: flex;
+            flex-direction: column;
             box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
             animation: fadeIn 0.2s ease-out;
         }
+
         .modal-header {
-            padding: 16px; border-bottom: 1px solid #374151;
-            display: flex; justify-content: space-between; align-items: center;
-            font-weight: bold; color: #f3f4f6; font-size: 1rem;
+            padding: 16px;
+            border-bottom: 1px solid #374151;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-weight: bold;
+            color: #f3f4f6;
+            font-size: 1rem;
         }
+
         .modal-body {
-            padding: 16px; overflow-y: auto;
-            white-space: pre-wrap; font-family: monospace;
-            font-size: 0.85rem; color: #d1d5db; line-height: 1.6;
+            padding: 16px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            font-family: monospace;
+            font-size: 0.85rem;
+            color: #d1d5db;
+            line-height: 1.6;
         }
+
         .modal-footer {
-            padding: 12px 16px; border-top: 1px solid #374151;
-            text-align: right; background-color: #111827; border-radius: 0 0 12px 12px;
+            padding: 12px 16px;
+            border-top: 1px solid #374151;
+            text-align: right;
+            background-color: #111827;
+            border-radius: 0 0 12px 12px;
         }
 
         /* Mobile Safe Area */
-        .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
-        .scrollbar-hide::-webkit-scrollbar { display: none; }
-        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+        .pb-safe {
+            padding-bottom: env(safe-area-inset-bottom);
+        }
+
+        .scrollbar-hide::-webkit-scrollbar {
+            display: none;
+        }
+
+        .scrollbar-hide {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
     </style>
 </head>
+
 <body>
     <div id="root"></div>
 
@@ -97,18 +185,36 @@
 
             if (!status) return <div className="flex h-[50vh] items-center justify-center text-blue-400 animate-pulse flex-col gap-2"><i className="ph ph-spinner animate-spin text-3xl"></i><span>System Loading...</span></div>;
 
+            // [수정됨] 수익률 계산 로직 (OFF 모드 0% 처리 포함)
+            const currentTotal = status.balance.total;
+            const initialTotal = status.initial_balance ? status.initial_balance : 0;
+            const pnl = currentTotal - initialTotal;
+            const pnlPercent = initialTotal > 0 ? (pnl / initialTotal) * 100 : 0.0;
+            const isProfit = pnl >= 0;
+
             return (
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-6 animate-fade-in pb-20 md:pb-0">
                     <div className="lg:col-span-2 space-y-4 md:space-y-6">
                         {/* 자산 카드 */}
                         <div className="bg-gray-800 p-5 rounded-xl shadow-lg border border-gray-700">
-                            <h2 className="text-base md:text-lg font-semibold text-gray-300 mb-4 flex items-center gap-2">
-                                <i className="ph ph-wallet text-blue-400"></i> 자산 현황 ({status.mode})
-                            </h2>
+                            <div className="flex justify-between items-start mb-4">
+                                <h2 className="text-base md:text-lg font-semibold text-gray-300 flex items-center gap-2">
+                                    <i className="ph ph-wallet text-blue-400"></i> 자산 현황 ({status.mode})
+                                </h2>
+                                <div className={`px-3 py-1 rounded-full text-xs font-bold border ${isProfit ? 'bg-green-900/30 text-green-400 border-green-800' : 'bg-red-900/30 text-red-400 border-red-800'}`}>
+                                    {isProfit ? '▲' : '▼'} {pnlPercent.toFixed(2)}% (${Math.abs(pnl).toLocaleString()})
+                                </div>
+                            </div>
+
                             <div className="grid grid-cols-2 gap-3 md:gap-4">
-                                <div className="bg-gray-900 p-4 rounded-lg border border-gray-700/50">
+                                <div className="bg-gray-900 p-4 rounded-lg border border-gray-700/50 relative overflow-hidden">
+                                    <div className={`absolute top-0 right-0 p-2 opacity-10 text-4xl ${isProfit ? 'text-green-500' : 'text-red-500'}`}>
+                                        <i className={`ph ${isProfit ? 'ph-trend-up' : 'ph-trend-down'}`}></i>
+                                    </div>
                                     <p className="text-gray-500 text-xs md:text-sm mb-1">총 자산 (Total)</p>
-                                    <p className="text-xl md:text-2xl font-bold text-white tracking-wide">${status.balance.total.toLocaleString()}</p>
+                                    <p className={`text-xl md:text-2xl font-bold tracking-wide ${isProfit ? 'text-green-400' : 'text-red-400'}`}>
+                                        ${status.balance.total.toLocaleString()}
+                                    </p>
                                 </div>
                                 <div className="bg-gray-900 p-4 rounded-lg border border-gray-700/50">
                                     <p className="text-gray-500 text-xs md:text-sm mb-1">주문 가능 (Free)</p>
@@ -117,19 +223,18 @@
                             </div>
                         </div>
 
-                        {/* 포지션 섹션 (반응형) */}
+                        {/* 포지션 섹션 */}
                         <div className="bg-gray-800 p-5 rounded-xl shadow-lg border border-gray-700">
                             <h2 className="text-base md:text-lg font-semibold text-gray-300 mb-4 flex items-center gap-2">
                                 <i className="ph ph-chart-line-up text-green-400"></i> 보유 포지션
                             </h2>
-                            
+
                             {status.positions.length === 0 ? (
                                 <div className="text-center py-8 text-gray-500 bg-gray-900/50 rounded-lg border border-dashed border-gray-700 text-sm">
                                     보유 중인 포지션이 없습니다.
                                 </div>
                             ) : (
                                 <>
-                                    {/* Desktop View: Table */}
                                     <div className="hidden md:block overflow-x-auto rounded-lg border border-gray-700">
                                         <table className="w-full text-left text-sm text-gray-400">
                                             <thead className="bg-gray-900 uppercase text-xs font-semibold text-gray-300">
@@ -145,33 +250,31 @@
                                                 {status.positions.map((pos) => (
                                                     <tr key={pos.symbol} className="hover:bg-gray-700/50">
                                                         <td className="px-4 py-3 font-medium text-white">{pos.symbol}</td>
-                                                        <td className="px-4 py-3"><span className={`px-2 py-1 rounded text-xs font-bold ${pos.side==='buy'?'bg-green-900/50 text-green-400':'bg-red-900/50 text-red-400'}`}>{pos.side.toUpperCase()} x{pos.leverage}</span></td>
+                                                        <td className="px-4 py-3"><span className={`px-2 py-1 rounded text-xs font-bold ${pos.side === 'buy' ? 'bg-green-900/50 text-green-400' : 'bg-red-900/50 text-red-400'}`}>{pos.side.toUpperCase()} x{pos.leverage}</span></td>
                                                         <td className="px-4 py-3 font-mono">${pos.entryPrice}</td>
-                                                        <td className={`px-4 py-3 font-bold ${pos.unrealizedPnl>=0?'text-green-400':'text-red-400'}`}>{pos.unrealizedPnl>0?'+':''}{pos.unrealizedPnl}</td>
-                                                        <td className="px-4 py-3 text-right"><button onClick={()=>forceClose(pos.symbol)} className="text-red-400 hover:bg-red-900/30 px-2 py-1 rounded text-xs border border-red-800">청산</button></td>
+                                                        <td className={`px-4 py-3 font-bold ${pos.unrealizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>{pos.unrealizedPnl > 0 ? '+' : ''}{pos.unrealizedPnl}</td>
+                                                        <td className="px-4 py-3 text-right"><button onClick={() => forceClose(pos.symbol)} className="text-red-400 hover:bg-red-900/30 px-2 py-1 rounded text-xs border border-red-800 transition">청산</button></td>
                                                     </tr>
                                                 ))}
                                             </tbody>
                                         </table>
                                     </div>
-
-                                    {/* Mobile View: Card List */}
                                     <div className="md:hidden space-y-3">
                                         {status.positions.map((pos) => (
                                             <div key={pos.symbol} className="bg-gray-900/80 p-4 rounded-lg border border-gray-700 flex flex-col gap-2 shadow-sm">
                                                 <div className="flex justify-between items-center">
                                                     <div className="flex items-center gap-2">
                                                         <span className="font-bold text-white text-lg">{pos.symbol.split('/')[0]}</span>
-                                                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold border ${pos.side==='buy'?'text-green-400 border-green-800 bg-green-900/30':'text-red-400 border-red-800 bg-red-900/30'}`}>
+                                                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold border ${pos.side === 'buy' ? 'text-green-400 border-green-800 bg-green-900/30' : 'text-red-400 border-red-800 bg-red-900/30'}`}>
                                                             {pos.side.toUpperCase()} x{pos.leverage}
                                                         </span>
                                                     </div>
-                                                    <button onClick={()=>forceClose(pos.symbol)} className="text-red-400 text-xs border border-red-800 bg-red-900/20 px-3 py-1.5 rounded-full">청산</button>
+                                                    <button onClick={() => forceClose(pos.symbol)} className="text-red-400 text-xs border border-red-800 bg-red-900/20 px-3 py-1.5 rounded-full">청산</button>
                                                 </div>
                                                 <div className="flex justify-between text-sm mt-1">
                                                     <div className="text-gray-400">진입가 <span className="text-gray-200 font-mono">${pos.entryPrice}</span></div>
-                                                    <div className={`font-bold ${pos.unrealizedPnl>=0?'text-green-400':'text-red-400'}`}>
-                                                        {pos.unrealizedPnl>0?'+':''}{pos.unrealizedPnl} USD
+                                                    <div className={`font-bold ${pos.unrealizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                                        {pos.unrealizedPnl > 0 ? '+' : ''}{pos.unrealizedPnl} USD
                                                     </div>
                                                 </div>
                                             </div>
@@ -184,17 +287,30 @@
 
                     {/* 제어 및 로그 */}
                     <div className="space-y-4 md:space-y-6">
+                        {/* [수정됨] 상태에 따라 버튼 스타일이 변하는 제어 패널 */}
                         <div className="bg-gray-800 p-5 rounded-xl shadow-lg border border-gray-700">
                             <h2 className="text-base md:text-lg font-semibold text-gray-300 mb-4">🕹️ 제어 패널</h2>
                             <div className="grid grid-cols-1 gap-3">
-                                <button onClick={() => sendCommand('set_mode', 'PAPER')} className="w-full py-3 bg-green-600/10 hover:bg-green-600/20 text-green-400 border border-green-600/50 rounded-lg font-bold transition flex items-center justify-center gap-2 text-sm">
-                                    <i className="ph ph-flask text-lg"></i> 모의매매
+                                <button onClick={() => sendCommand('set_mode', 'PAPER')}
+                                    className={`w-full py-3 rounded-lg font-bold transition flex items-center justify-center gap-2 text-sm border 
+                                    ${status.mode === 'PAPER'
+                                            ? 'bg-green-600 text-white border-green-500 shadow-[0_0_15px_rgba(34,197,94,0.4)] ring-1 ring-green-400'
+                                            : 'bg-green-600/10 text-green-400 border-green-600/50 hover:bg-green-600/20'}`}>
+                                    <i className={`ph ${status.mode === 'PAPER' ? 'ph-flask-fill' : 'ph-flask'} text-lg`}></i> 모의매매
                                 </button>
-                                <button onClick={() => sendCommand('set_mode', 'REAL')} className="w-full py-3 bg-red-600/10 hover:bg-red-600/20 text-red-400 border border-red-600/50 rounded-lg font-bold transition flex items-center justify-center gap-2 text-sm">
-                                    <i className="ph ph-lightning text-lg"></i> 실전매매
+                                <button onClick={() => sendCommand('set_mode', 'REAL')}
+                                    className={`w-full py-3 rounded-lg font-bold transition flex items-center justify-center gap-2 text-sm border
+                                    ${status.mode === 'REAL'
+                                            ? 'bg-red-600 text-white border-red-500 shadow-[0_0_15px_rgba(239,68,68,0.4)] ring-1 ring-red-400 animate-pulse'
+                                            : 'bg-red-600/10 text-red-400 border-red-600/50 hover:bg-red-600/20'}`}>
+                                    <i className={`ph ${status.mode === 'REAL' ? 'ph-lightning-fill' : 'ph-lightning'} text-lg`}></i> 실전매매
                                 </button>
-                                <button onClick={() => sendCommand('stop', 'OFF')} className="w-full py-3 bg-gray-600/10 hover:bg-gray-600/20 text-gray-400 border border-gray-600/50 rounded-lg font-bold transition flex items-center justify-center gap-2 text-sm">
-                                    <i className="ph ph-stop-circle text-lg"></i> 시스템 정지
+                                <button onClick={() => sendCommand('stop', 'OFF')}
+                                    className={`w-full py-3 rounded-lg font-bold transition flex items-center justify-center gap-2 text-sm border
+                                    ${status.mode === 'OFF'
+                                            ? 'bg-gray-600 text-white border-gray-500 shadow-lg'
+                                            : 'bg-gray-600/10 text-gray-400 border-gray-600/50 hover:bg-gray-600/20'}`}>
+                                    <i className={`ph ${status.mode === 'OFF' ? 'ph-stop-circle-fill' : 'ph-stop-circle'} text-lg`}></i> 시스템 정지
                                 </button>
                             </div>
                         </div>
@@ -208,7 +324,7 @@
                                 {logs.map((log, i) => (
                                     <div key={i} className="break-words leading-relaxed opacity-90">
                                         <span className="text-gray-600 mr-1">[{log.time}]</span>
-                                        <span className={log.msg.includes("ERROR")?"text-red-400":log.msg.includes("WARN")?"text-yellow-400":log.msg.includes("BACKTEST")?"text-cyan-400":"text-gray-300"}>{log.msg}</span>
+                                        <span className={log.msg.includes("ERROR") ? "text-red-400" : log.msg.includes("WARN") ? "text-yellow-400" : log.msg.includes("BACKTEST") ? "text-cyan-400" : "text-gray-300"}>{log.msg}</span>
                                     </div>
                                 ))}
                                 <div ref={logEndRef} />
@@ -220,119 +336,309 @@
         };
 
         // ------------------------------------------------------------------
-        // [Component] History Tab
+        // [Component] History Tab (Advanced Analytics)
         // ------------------------------------------------------------------
         const History = () => {
             const [mode, setMode] = useState('PAPER');
-            const [data, setData] = useState(null);
-            const chartRef = useRef(null);
-            const chartInstance = useRef(null);
+            const [trades, setTrades] = useState([]);
+            const [stats, setStats] = useState({ winRate: 0, profitFactor: 0, totalPnl: 0, totalFees: 0, avgDuration: '-' });
+            const [selectedTrade, setSelectedTrade] = useState(null); // For Modal
 
             const fetchHistory = async () => {
                 try {
                     const res = await axios.get(`/api/history?mode=${mode}`);
-                    setData(res.data);
-                } catch(e) { console.error(e); }
+                    const rawData = res.data.trades || res.data; // 호환성 처리
+
+                    // 최신순 정렬
+                    const sortedData = Array.isArray(rawData) ? rawData.sort((a, b) => b.id - a.id) : [];
+                    setTrades(sortedData);
+                    calculateStats(sortedData);
+                } catch (e) { console.error(e); }
+            };
+
+            // 통계 즉석 계산
+            const calculateStats = (data) => {
+                if (!data.length) {
+                    setStats({ winRate: 0, profitFactor: 0, totalPnl: 0, totalFees: 0, avgDuration: '-' });
+                    return;
+                }
+
+                let wins = 0;
+                let grossProfit = 0;
+                let grossLoss = 0;
+                let totalFees = 0;
+                let totalDurationMins = 0;
+                let durationCount = 0;
+
+                data.forEach(t => {
+                    if (t.pnl > 0) { wins++; grossProfit += t.pnl; }
+                    else { grossLoss += Math.abs(t.pnl); }
+
+                    totalFees += (t.fee || 0);
+
+                    if (t.duration) {
+                        totalDurationMins += t.duration;
+                        durationCount++;
+                    }
+                });
+
+                const winRate = (wins / data.length) * 100;
+                const profitFactor = grossLoss === 0 ? grossProfit : (grossProfit / grossLoss);
+                const totalPnl = data.reduce((sum, t) => sum + t.pnl, 0);
+                const avgMins = durationCount > 0 ? Math.floor(totalDurationMins / durationCount) : 0;
+
+                setStats({
+                    winRate: winRate.toFixed(1),
+                    profitFactor: profitFactor.toFixed(2),
+                    totalPnl: totalPnl.toFixed(2),
+                    totalFees: totalFees.toFixed(2),
+                    avgDuration: formatDuration(avgMins)
+                });
+            };
+
+            const formatDuration = (mins) => {
+                if (!mins) return "-";
+                const h = Math.floor(mins / 60);
+                const m = mins % 60;
+                return h > 0 ? `${h}h ${m}m` : `${m}m`;
+            };
+
+            const downloadCSV = () => {
+                window.location.href = `/api/history/download?mode=${mode}`;
             };
 
             useEffect(() => { fetchHistory(); }, [mode]);
 
-            useEffect(() => {
-                if (data && data.equity_curve && chartRef.current) {
-                    if (chartInstance.current) chartInstance.current.destroy();
-                    const ctx = chartRef.current.getContext('2d');
-                    const labels = data.equity_curve.map(d => d.time.substring(5, 16)); 
-                    const values = data.equity_curve.map(d => d.value);
-                    const isPositive = (values[values.length - 1] || 0) >= 0;
-
-                    chartInstance.current = new Chart(ctx, {
-                        type: 'line',
-                        data: {
-                            labels, datasets: [{
-                                label: 'PnL', data: values, borderColor: isPositive?'#34d399':'#f87171', 
-                                backgroundColor: isPositive?'rgba(52, 211, 153, 0.1)':'rgba(248, 113, 113, 0.1)',
-                                borderWidth: 2, fill: true, tension: 0.3, pointRadius: 0
-                            }]
-                        },
-                        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { grid: { color: '#374151' } } } }
-                    });
-                }
-            }, [data]);
-
             return (
                 <div className="space-y-4 md:space-y-6 animate-fade-in pb-20">
-                    <div className="flex justify-between items-center bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-lg">
-                        <h2 className="text-lg md:text-xl font-bold text-white flex items-center gap-2"><i className="ph ph-chart-bar text-yellow-400"></i> 이력</h2>
-                        <div className="flex bg-gray-900 rounded-lg p-1 border border-gray-600">
-                            {['PAPER', 'REAL'].map(m => (
-                                <button key={m} onClick={()=>setMode(m)} className={`px-3 py-1.5 rounded-md text-xs md:text-sm font-bold transition ${mode===m?'bg-blue-600 text-white':'text-gray-400'}`}>{m}</button>
-                            ))}
+                    {/* 1. Header & Controls */}
+                    <div className="flex flex-col md:flex-row justify-between items-center bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-lg gap-4">
+                        <div className="flex items-center gap-2">
+                            <h2 className="text-lg md:text-xl font-bold text-white flex items-center gap-2"><i className="ph ph-chart-polar text-purple-400"></i> 전략 분석</h2>
+                            <span className="text-xs text-gray-500">({trades.length} Trades)</span>
+                        </div>
+
+                        <div className="flex gap-3 w-full md:w-auto">
+                            <div className="flex bg-gray-900 rounded-lg p-1 border border-gray-600 flex-1 md:flex-none">
+                                {['PAPER', 'REAL'].map(m => (
+                                    <button key={m} onClick={() => setMode(m)} className={`flex-1 md:flex-none px-4 py-1.5 rounded-md text-xs md:text-sm font-bold transition ${mode === m ? (m === 'REAL' ? 'bg-red-600 text-white' : 'bg-blue-600 text-white') : 'text-gray-400'}`}>
+                                        {m === 'PAPER' ? '모의투자' : '실전투자'}
+                                    </button>
+                                ))}
+                            </div>
+                            <button onClick={downloadCSV} className="px-3 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg text-sm font-bold flex items-center gap-2 shadow">
+                                <i className="ph-bold ph-download-simple"></i> <span className="hidden md:inline">CSV</span>
+                            </button>
                         </div>
                     </div>
-                    {data ? (
-                        <>
-                            <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-lg h-[250px] md:h-[300px] relative">
-                                <canvas ref={chartRef}></canvas>
+
+                    {/* 2. Analytics Cards */}
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
+                        <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 shadow flex flex-col items-center justify-center">
+                            <div className="text-gray-400 text-xs mb-1">Total PnL</div>
+                            <div className={`text-xl md:text-2xl font-bold ${stats.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                {stats.totalPnl >= 0 ? '+' : ''}{stats.totalPnl} <span className="text-xs text-gray-500">$</span>
                             </div>
-                            {/* Mobile Card View */}
-                            <div className="md:hidden space-y-3">
-                                {data.trades.map(t => (
-                                    <div key={t.id} className="bg-gray-800 p-4 rounded-lg border border-gray-700 shadow-sm flex justify-between items-center">
-                                        <div>
-                                            <div className="text-white font-bold flex items-center gap-2">
-                                                {t.symbol} 
-                                                <span className={`text-[10px] px-1.5 rounded border ${t.side==='buy'?'border-green-800 text-green-400':'border-red-800 text-red-400'}`}>{t.side.toUpperCase()}</span>
+                        </div>
+                        <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 shadow flex flex-col items-center justify-center">
+                            <div className="text-gray-400 text-xs mb-1">Win Rate</div>
+                            <div className="text-xl md:text-2xl font-bold text-blue-400">{stats.winRate}%</div>
+                        </div>
+                        <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 shadow flex flex-col items-center justify-center">
+                            <div className="text-gray-400 text-xs mb-1">Profit Factor</div>
+                            <div className={`text-xl md:text-2xl font-bold ${stats.profitFactor >= 1.5 ? 'text-green-400' : stats.profitFactor >= 1 ? 'text-yellow-400' : 'text-gray-400'}`}>
+                                {stats.profitFactor}
+                            </div>
+                        </div>
+                        <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 shadow flex flex-col items-center justify-center">
+                            <div className="text-gray-400 text-xs mb-1">Avg Duration</div>
+                            <div className="text-lg md:text-xl font-bold text-purple-400">{stats.avgDuration}</div>
+                        </div>
+                    </div>
+
+                    {/* 3. Detailed List */}
+                    <div className="bg-gray-800 rounded-xl border border-gray-700 shadow-lg overflow-hidden flex flex-col h-[500px]">
+                        <div className="overflow-y-auto custom-scroll flex-1">
+                            {/* [Mobile] List View */}
+                            <div className="md:hidden divide-y divide-gray-700">
+                                {trades.map(t => (
+                                    <div key={t.id} onClick={() => setSelectedTrade(t)} className="p-4 hover:bg-gray-700/50 active:bg-gray-700 transition cursor-pointer">
+                                        <div className="flex justify-between items-start mb-2">
+                                            <div className="flex items-center gap-2">
+                                                <span className="font-bold text-white text-base">{t.symbol.split('/')[0]}</span>
+                                                <span className={`text-[10px] px-1.5 py-0.5 rounded border ${t.side === 'buy' ? 'border-green-800 text-green-400 bg-green-900/20' : 'border-red-800 text-red-400 bg-red-900/20'}`}>
+                                                    {t.side === 'buy' ? 'L' : 'S'}
+                                                </span>
                                             </div>
-                                            <div className="text-gray-500 text-xs mt-1">{t.timestamp}</div>
+                                            <div className={`font-bold text-base ${t.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                                {t.pnl > 0 ? '+' : ''}{parseFloat(t.pnl).toFixed(2)}
+                                            </div>
                                         </div>
-                                        <div className={`font-bold ${t.pnl>=0?'text-green-400':'text-red-400'}`}>
-                                            {t.pnl>0?'+':''}{t.pnl.toFixed(2)}
+                                        <div className="flex justify-between items-center text-xs text-gray-500">
+                                            <div>{t.timestamp.substring(5, 16)}</div>
+                                            <div className="flex items-center gap-2">
+                                                <span>{t.exit_reason || '-'}</span>
+                                                <i className="ph-bold ph-caret-right"></i>
+                                            </div>
                                         </div>
                                     </div>
                                 ))}
                             </div>
-                            {/* Desktop Table View */}
-                            <div className="hidden md:block bg-gray-800 rounded-xl border border-gray-700 shadow-lg overflow-hidden">
-                                <div className="overflow-x-auto max-h-[500px] overflow-y-auto custom-scroll">
-                                    <table className="w-full text-sm text-left text-gray-400">
-                                        <thead className="text-xs text-gray-400 uppercase bg-gray-900 sticky top-0">
-                                            <tr>
-                                                <th className="px-4 py-3">Time</th>
-                                                <th className="px-4 py-3">Symbol</th>
-                                                <th className="px-4 py-3">Side</th>
-                                                <th className="px-4 py-3 text-right">PnL</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody className="divide-y divide-gray-700">
-                                            {data.trades.map(t => (
-                                                <tr key={t.id} className="hover:bg-gray-700/50">
-                                                    <td className="px-4 py-3 text-xs">{t.timestamp}</td>
-                                                    <td className="px-4 py-3 font-bold text-white">{t.symbol}</td>
-                                                    <td className="px-4 py-3"><span className={`px-2 py-0.5 rounded text-[10px] border ${t.side==='buy'?'border-green-800 text-green-400':'border-red-800 text-red-400'}`}>{t.side.toUpperCase()}</span></td>
-                                                    <td className={`px-4 py-3 text-right font-bold ${t.pnl>=0?'text-green-400':'text-red-400'}`}>{t.pnl>0?'+':''}{t.pnl.toFixed(2)}</td>
-                                                </tr>
-                                            ))}
-                                        </tbody>
-                                    </table>
+
+                            {/* [Desktop] Table View */}
+                            <table className="hidden md:table w-full text-sm text-left text-gray-400">
+                                <thead className="text-xs text-gray-400 uppercase bg-gray-900 sticky top-0 shadow-sm z-10">
+                                    <tr>
+                                        <th className="px-4 py-3">Time</th>
+                                        <th className="px-4 py-3">Symbol</th>
+                                        <th className="px-4 py-3 text-center">Context</th>
+                                        <th className="px-4 py-3 text-right">Entry &rarr; Exit</th>
+                                        <th className="px-4 py-3 text-center">Duration</th>
+                                        <th className="px-4 py-3 text-right">Fee</th>
+                                        <th className="px-4 py-3 text-right">PnL (ROI)</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-700">
+                                    {trades.map(t => (
+                                        <tr key={t.id} onClick={() => setSelectedTrade(t)} className="hover:bg-gray-700/50 cursor-pointer transition">
+                                            <td className="px-4 py-3 text-xs whitespace-nowrap">{t.timestamp.substring(5, 16)}</td>
+                                            <td className="px-4 py-3 font-bold text-white">
+                                                <div className="flex items-center gap-2">
+                                                    {t.symbol}
+                                                    <span className={`text-[10px] px-1.5 rounded ${t.side === 'buy' ? 'text-green-400 bg-green-900/30' : 'text-red-400 bg-red-900/30'}`}>{t.side.toUpperCase()}</span>
+                                                </div>
+                                            </td>
+                                            <td className="px-4 py-3 text-center text-xs">
+                                                <div className="flex items-center justify-center gap-1">
+                                                    <span className="text-gray-500">{t.entry_regime || '?'}</span>
+                                                    <i className="ph ph-arrow-right text-[10px]"></i>
+                                                    <span className="text-white font-medium">{t.exit_reason || '?'}</span>
+                                                </div>
+                                            </td>
+                                            <td className="px-4 py-3 text-right font-mono text-xs">
+                                                <div className="text-gray-400">{parseFloat(t.entry_price).toFixed(t.entry_price < 1 ? 4 : 1)}</div>
+                                                <div className="text-gray-500">➜ {parseFloat(t.exit_price).toFixed(t.exit_price < 1 ? 4 : 1)}</div>
+                                            </td>
+                                            <td className="px-4 py-3 text-center text-xs">{formatDuration(t.duration)}</td>
+                                            <td className="px-4 py-3 text-right text-xs text-red-300">-{parseFloat(t.fee || 0).toFixed(2)}</td>
+                                            <td className="px-4 py-3 text-right">
+                                                <div className={`font-bold ${t.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                                    {t.pnl > 0 ? '+' : ''}{parseFloat(t.pnl).toFixed(2)}
+                                                </div>
+                                                <div className={`text-[10px] ${t.roi >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                                                    ({t.roi ? parseFloat(t.roi).toFixed(2) : '0.00'}%)
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    {/* 4. Detailed Modal (Mobile/Desktop Common) */}
+                    {selectedTrade && (
+                        <div className="modal-overlay" onClick={() => setSelectedTrade(null)}>
+                            <div className="modal-content border-t-4 border-t-blue-500" onClick={e => e.stopPropagation()}>
+                                <div className="modal-header bg-gray-900">
+                                    <div className="flex items-center gap-2">
+                                        <span>Trade Details</span>
+                                        <span className="text-xs text-gray-500">#{selectedTrade.id}</span>
+                                    </div>
+                                    <button onClick={() => setSelectedTrade(null)} className="text-gray-400 hover:text-white"><i className="ph-bold ph-x"></i></button>
+                                </div>
+
+                                <div className="p-4 space-y-4">
+                                    {/* Main Result */}
+                                    <div className="flex justify-between items-center pb-4 border-b border-gray-700">
+                                        <div>
+                                            <div className="text-2xl font-bold text-white">{selectedTrade.symbol}</div>
+                                            <span className={`text-xs px-2 py-0.5 rounded font-bold ${selectedTrade.side === 'buy' ? 'bg-green-900 text-green-400' : 'bg-red-900 text-red-400'}`}>
+                                                {selectedTrade.side.toUpperCase()}
+                                            </span>
+                                        </div>
+                                        <div className="text-right">
+                                            <div className={`text-2xl font-bold ${selectedTrade.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                                {selectedTrade.pnl > 0 ? '+' : ''}{parseFloat(selectedTrade.pnl).toFixed(2)} USD
+                                            </div>
+                                            <div className={`text-sm font-medium ${selectedTrade.roi >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                                                {selectedTrade.roi ? parseFloat(selectedTrade.roi).toFixed(2) : '0.00'}% ROI
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Grid Details */}
+                                    <div className="grid grid-cols-2 gap-y-4 gap-x-2 text-sm">
+                                        <div>
+                                            <div className="text-gray-500 text-xs">Entry Price</div>
+                                            <div className="font-mono text-white">${parseFloat(selectedTrade.entry_price).toFixed(4)}</div>
+                                        </div>
+                                        <div className="text-right">
+                                            <div className="text-gray-500 text-xs">Exit Price</div>
+                                            <div className="font-mono text-white">${parseFloat(selectedTrade.exit_price).toFixed(4)}</div>
+                                        </div>
+
+                                        <div>
+                                            <div className="text-gray-500 text-xs">Entry Time</div>
+                                            <div className="text-white text-xs">{selectedTrade.timestamp}</div>
+                                        </div>
+                                        <div className="text-right">
+                                            <div className="text-gray-500 text-xs">Duration</div>
+                                            <div className="text-white font-mono">{formatDuration(selectedTrade.duration)}</div>
+                                        </div>
+
+                                        <div>
+                                            <div className="text-gray-500 text-xs">Strategy Context</div>
+                                            <div className="text-blue-300 text-xs">
+                                                {selectedTrade.entry_regime || 'Unknown'} <i className="ph-bold ph-arrow-right inline text-[10px]"></i> {selectedTrade.exit_reason || 'Manual'}
+                                            </div>
+                                        </div>
+                                        <div className="text-right">
+                                            <div className="text-gray-500 text-xs">Fees Paid</div>
+                                            <div className="text-red-300 font-mono">-${parseFloat(selectedTrade.fee || 0).toFixed(4)}</div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="modal-footer bg-gray-900">
+                                    <button onClick={() => setSelectedTrade(null)} className="w-full py-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg font-bold text-sm">
+                                        닫기
+                                    </button>
                                 </div>
                             </div>
-                        </>
-                    ) : <div className="text-center py-20 text-gray-500">데이터 로딩 중...</div>}
+                        </div>
+                    )}
                 </div>
             );
         };
+
+        // [수정됨] onBlur 프로퍼티 추가
+        const InputGroup = ({ label, name, val, step = "1", onChange, onBlur }) => (
+            <div>
+                <label className="text-[10px] text-gray-400">{label}</label>
+                <input
+                    type="number"
+                    step={step}
+                    name={name}
+                    value={val}
+                    onChange={onChange}
+                    onBlur={onBlur} // 포커스 해제 시 이벤트 연결
+                    className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600 text-sm focus:border-blue-500 focus:outline-none transition-colors"
+                />
+            </div>
+        );
 
         // ------------------------------------------------------------------
         // [Component] Backtest Lab (Final: Carousel, History Replay, Modal)
         // ------------------------------------------------------------------
         const BacktestLab = () => {
             const [params, setParams] = useState({
-                symbol: "BTC/USDT", 
-                initial_cash: 10000, 
-                train_days: 365, 
-                test_days: 30, 
-                update_data: false, 
-                is_batch: false, 
+                symbol: "BTC/USDT",
+                initial_cash: 10000,
+                train_days: 365,
+                test_days: 30,
+                update_data: false,
+                is_batch: false,
                 is_real_portfolio: false, // [NEW] 상태 추가
                 custom_settings: {
                     RSI_BUY_LOWER: 30, RSI_BUY_UPPER: 65, RSI_SELL_LOWER: 35, RSI_SELL_UPPER: 70,
@@ -340,16 +646,16 @@
                     LEVERAGE: 2, MAX_OPEN_POSITIONS: 3
                 }
             });
-const [history, setHistory] = useState([]);
+            const [history, setHistory] = useState([]);
             const [loading, setLoading] = useState(false);
             const [result, setResult] = useState(null);
 
             // [Chart State]
-            const [graphList, setGraphList] = useState([]); 
+            const [graphList, setGraphList] = useState([]);
             const [currentGraphIndex, setCurrentGraphIndex] = useState(0);
 
             // [UI State]
-            const [activeTooltipId, setActiveTooltipId] = useState(null); 
+            const [activeTooltipId, setActiveTooltipId] = useState(null);
             const [mobileModalData, setMobileModalData] = useState(null);
 
             const chartRef = useRef(null);
@@ -386,7 +692,7 @@ const [history, setHistory] = useState([]);
                             symbol: cfg.SYMBOLS && cfg.SYMBOLS.length > 0 ? cfg.SYMBOLS[0] : "BTC/USDT",
                             custom_settings: {
                                 ...p.custom_settings,
-                                LEVERAGE: cfg.LEVERAGE || 2, 
+                                LEVERAGE: cfg.LEVERAGE || 2,
                                 MAX_OPEN_POSITIONS: cfg.MAX_OPEN_POSITIONS || 3,
                                 STOP_LOSS_ATR: cfg.STOP_LOSS_ATR || 2.0,
                                 TRAIL_TRIGGER_ATR: cfg.TRAIL_TRIGGER_ATR || 2.0,
@@ -394,14 +700,25 @@ const [history, setHistory] = useState([]);
                             }
                         }));
                         setHistory(histRes.data);
-                    } catch(e) {}
+                    } catch (e) { }
                 };
                 init();
             }, []);
 
+            // [수정됨] 빈 문자열 허용 (입력 중 끊김 방지)
             const handleCustomChange = (e) => {
                 const { name, value } = e.target;
-                setParams(p => ({ ...p, custom_settings: { ...p.custom_settings, [name]: Number(value) } }));
+                // 값이 비어있으면 빈 문자열 그대로 저장, 아니면 숫자로 변환
+                const newValue = value === '' ? '' : Number(value);
+                setParams(p => ({ ...p, custom_settings: { ...p.custom_settings, [name]: newValue } }));
+            };
+
+            // [추가됨] 포커스 잃을 때 빈 값이면 0으로 복구
+            const handleCustomBlur = (e) => {
+                const { name, value } = e.target;
+                if (value === '' || isNaN(Number(value))) {
+                    setParams(p => ({ ...p, custom_settings: { ...p.custom_settings, [name]: 0 } }));
+                }
             };
 
             // [Logic] Checkbox Mutual Exclusion
@@ -415,22 +732,29 @@ const [history, setHistory] = useState([]);
 
             // [Action] Run Backtest
             const runExperiment = async () => {
-                if(loading) return;
+                if (loading) return;
                 setLoading(true);
                 setResult(null);
                 setGraphList([]);
                 try {
-                    const payload = { 
-                        ...params, 
-                        initial_cash: Number(params.initial_cash), 
-                        train_days: Number(params.train_days), 
-                        test_days: Number(params.test_days), 
-                        custom_settings: params.custom_settings 
+                    // [안전장치] 전송 전 빈 값은 0으로 치환
+                    const sanitizedSettings = {};
+                    Object.keys(params.custom_settings).forEach(key => {
+                        const val = params.custom_settings[key];
+                        sanitizedSettings[key] = val === '' ? 0 : Number(val);
+                    });
+
+                    const payload = {
+                        ...params,
+                        initial_cash: Number(params.initial_cash),
+                        train_days: Number(params.train_days),
+                        test_days: Number(params.test_days),
+                        custom_settings: sanitizedSettings // 수정된 설정 사용
                     };
-                    
+
                     const res = await axios.post('/api/backtest/run_custom', payload);
                     const data = res.data;
-                    
+
                     // 결과 타입 설정 (batch, real_pf, single)
                     let type = 'single';
                     if (params.is_batch) type = 'batch';
@@ -456,10 +780,10 @@ const [history, setHistory] = useState([]);
                     const histRes = await axios.get('/api/backtest/history');
                     setHistory(histRes.data);
 
-                } catch(e) { 
-                    alert("Error: " + (e.response?.data?.detail || e.message)); 
-                } finally { 
-                    setLoading(false); 
+                } catch (e) {
+                    alert("Error: " + (e.response?.data?.detail || e.message));
+                } finally {
+                    setLoading(false);
                 }
             };
 
@@ -473,19 +797,19 @@ const [history, setHistory] = useState([]);
                         mdd: record.mdd,
                         type: 'history'
                     });
-                    
+
                     const res = await axios.get(`/api/backtest/result/${record.id}`);
-                    const responseData = res.data; 
-                    
+                    const responseData = res.data;
+
                     // [핵심] 다중 그래프(객체 배열) vs 단일 그래프(데이터 배열) 자동 판별
                     if (Array.isArray(responseData) && responseData.length > 0 && responseData[0].label) {
                         setGraphList(responseData);
                     } else {
                         setGraphList([{ label: record.symbol, data: responseData }]);
                     }
-                    
+
                     setCurrentGraphIndex(0);
-                } catch(e) {
+                } catch (e) {
                     alert("그래프 데이터를 불러올 수 없습니다.");
                 } finally {
                     setLoading(false);
@@ -493,8 +817,8 @@ const [history, setHistory] = useState([]);
             };
 
             const deleteRecord = async (id) => {
-                if(!confirm("삭제하시겠습니까?")) return;
-                try { await axios.delete(`/api/backtest/history/${id}`); setHistory(prev => prev.filter(item => item.id !== id)); } catch(e){}
+                if (!confirm("삭제하시겠습니까?")) return;
+                try { await axios.delete(`/api/backtest/history/${id}`); setHistory(prev => prev.filter(item => item.id !== id)); } catch (e) { }
             };
 
             // [Chart Renderer]
@@ -504,11 +828,11 @@ const [history, setHistory] = useState([]);
                     if (!currentGraph || !currentGraph.data) return;
 
                     if (chartInstance.current) chartInstance.current.destroy();
-                    
+
                     const ctx = chartRef.current.getContext('2d');
                     const labels = currentGraph.data.map(d => d.time);
                     const values = currentGraph.data.map(d => d.value);
-                    
+
                     const startVal = values[0] || 0;
                     const endVal = values[values.length - 1] || 0;
                     const isPositive = endVal >= startVal;
@@ -519,28 +843,28 @@ const [history, setHistory] = useState([]);
                         type: 'line',
                         data: {
                             labels: labels,
-                            datasets: [{ 
-                                label: currentGraph.label, 
-                                data: values, 
-                                borderColor: color, 
-                                backgroundColor: bg, 
-                                fill: true, 
-                                tension: 0.1, 
+                            datasets: [{
+                                label: currentGraph.label,
+                                data: values,
+                                borderColor: color,
+                                backgroundColor: bg,
+                                fill: true,
+                                tension: 0.1,
                                 pointRadius: 0,
                                 borderWidth: 2
                             }]
                         },
-                        options: { 
-                            responsive: true, 
-                            maintainAspectRatio: false, 
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
                             scales: { x: { display: false }, y: { grid: { color: '#374151' } } },
-                            plugins: { 
-                                legend: { display: false }, 
-                                tooltip: { 
-                                    mode: 'index', 
+                            plugins: {
+                                legend: { display: false },
+                                tooltip: {
+                                    mode: 'index',
                                     intersect: false,
                                     callbacks: {
-                                        label: function(context) {
+                                        label: function (context) {
                                             let label = context.dataset.label || '';
                                             if (label) { label += ': '; }
                                             if (context.parsed.y !== null) {
@@ -549,7 +873,7 @@ const [history, setHistory] = useState([]);
                                             return label;
                                         }
                                     }
-                                } 
+                                }
                             }
                         }
                     });
@@ -560,38 +884,53 @@ const [history, setHistory] = useState([]);
             const nextGraph = () => setCurrentGraphIndex(prev => (prev + 1) % graphList.length);
             const prevGraph = () => setCurrentGraphIndex(prev => (prev - 1 + graphList.length) % graphList.length);
 
-            const InputGroup = ({ label, name, val, step="1" }) => (
-                <div>
-                    <label className="text-[10px] text-gray-400">{label}</label>
-                    <input type="number" step={step} name={name} value={val} onChange={handleCustomChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600 text-sm" />
-                </div>
-            );
-
             return (
                 <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 animate-fade-in pb-24 md:pb-0 md:h-[calc(100vh-200px)] md:min-h-[800px]">
                     {/* [Left] Configuration */}
                     <div className="xl:col-span-4 bg-gray-800 p-5 rounded-xl shadow-lg border border-gray-700 flex flex-col overflow-y-auto custom-scroll">
                         <h2 className="text-lg font-bold text-white mb-4 flex items-center gap-2"><i className="ph ph-flask text-purple-400"></i> 전략 설정</h2>
                         <div className="space-y-4 flex-1">
-                            <div><label className="block text-xs font-bold text-gray-500 mb-1">SYMBOL</label><input type="text" className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600" value={params.symbol} onChange={(e)=>setParams({...params, symbol: e.target.value})} disabled={params.is_batch || params.is_real_portfolio} /></div>
-                            <div><label className="block text-xs font-bold text-gray-500 mb-1">INITIAL CASH ($)</label><input type="number" className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600" value={params.initial_cash} onChange={(e)=>setParams({...params, initial_cash: e.target.value})} /></div>
+                            <div><label className="block text-xs font-bold text-gray-500 mb-1">SYMBOL</label><input type="text" className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600" value={params.symbol} onChange={(e) => setParams({ ...params, symbol: e.target.value })} disabled={params.is_batch || params.is_real_portfolio} /></div>
+                            <div><label className="block text-xs font-bold text-gray-500 mb-1">INITIAL CASH ($)</label><input type="number" className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600" value={params.initial_cash} onChange={(e) => setParams({ ...params, initial_cash: e.target.value })} /></div>
                             <div className="grid grid-cols-2 gap-3">
-                                <div><label className="block text-xs text-gray-500 mb-1">TRAIN DAYS</label><input type="number" className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" value={params.train_days} onChange={(e)=>setParams({...params, train_days: e.target.value})} /></div>
-                                <div><label className="block text-xs text-gray-500 mb-1">TEST DAYS</label><input type="number" className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" value={params.test_days} onChange={(e)=>setParams({...params, test_days: e.target.value})} /></div>
+                                <div><label className="block text-xs text-gray-500 mb-1">TRAIN DAYS</label><input type="number" className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" value={params.train_days} onChange={(e) => setParams({ ...params, train_days: e.target.value })} /></div>
+                                <div><label className="block text-xs text-gray-500 mb-1">TEST DAYS</label><input type="number" className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" value={params.test_days} onChange={(e) => setParams({ ...params, test_days: e.target.value })} /></div>
                             </div>
-                            <details className="group bg-gray-900/30 rounded-lg border border-gray-700 open:bg-gray-900/50 transition"><summary className="p-3 cursor-pointer font-bold text-sm text-green-400 flex justify-between items-center">Money Management <i className="ph-bold ph-caret-down group-open:rotate-180 transition"></i></summary><div className="p-3 pt-0 grid grid-cols-2 gap-3 border-t border-gray-700/50 mt-2"><InputGroup label="LEVERAGE" name="LEVERAGE" val={params.custom_settings.LEVERAGE} /><InputGroup label="MAX POS" name="MAX_OPEN_POSITIONS" val={params.custom_settings.MAX_OPEN_POSITIONS} /></div></details>
-                            <details className="group bg-gray-900/30 rounded-lg border border-gray-700 open:bg-gray-900/50 transition"><summary className="p-3 cursor-pointer font-bold text-sm text-blue-400 flex justify-between items-center">RSI Parameters <i className="ph-bold ph-caret-down group-open:rotate-180 transition"></i></summary><div className="p-3 pt-0 grid grid-cols-2 gap-3 border-t border-gray-700/50 mt-2"><InputGroup label="BUY LOWER" name="RSI_BUY_LOWER" val={params.custom_settings.RSI_BUY_LOWER} /><InputGroup label="BUY UPPER" name="RSI_BUY_UPPER" val={params.custom_settings.RSI_BUY_UPPER} /><InputGroup label="SELL LOWER" name="RSI_SELL_LOWER" val={params.custom_settings.RSI_SELL_LOWER} /><InputGroup label="SELL UPPER" name="RSI_SELL_UPPER" val={params.custom_settings.RSI_SELL_UPPER} /></div></details>
-                            <details className="group bg-gray-900/30 rounded-lg border border-gray-700 open:bg-gray-900/50 transition"><summary className="p-3 cursor-pointer font-bold text-sm text-red-400 flex justify-between items-center">Risk (ATR) <i className="ph-bold ph-caret-down group-open:rotate-180 transition"></i></summary><div className="p-3 pt-0 grid grid-cols-3 gap-3 border-t border-gray-700/50 mt-2"><InputGroup label="STOP" name="STOP_LOSS_ATR" val={params.custom_settings.STOP_LOSS_ATR} step="0.1" /><InputGroup label="TRIGGER" name="TRAIL_TRIGGER_ATR" val={params.custom_settings.TRAIL_TRIGGER_ATR} step="0.1" /><InputGroup label="DIST" name="TRAIL_DIST_ATR" val={params.custom_settings.TRAIL_DIST_ATR} step="0.1" /></div></details>
+
+                            {/* [수정됨] 모든 InputGroup에 onBlur={handleCustomBlur} 추가 */}
+                            <details className="group bg-gray-900/30 rounded-lg border border-gray-700 open:bg-gray-900/50 transition"><summary className="p-3 cursor-pointer font-bold text-sm text-green-400 flex justify-between items-center">Money Management <i className="ph-bold ph-caret-down group-open:rotate-180 transition"></i></summary>
+                                <div className="p-3 pt-0 grid grid-cols-2 gap-3 border-t border-gray-700/50 mt-2">
+                                    <InputGroup label="LEVERAGE" name="LEVERAGE" val={params.custom_settings.LEVERAGE} onChange={handleCustomChange} onBlur={handleCustomBlur} />
+                                    <InputGroup label="MAX POS" name="MAX_OPEN_POSITIONS" val={params.custom_settings.MAX_OPEN_POSITIONS} onChange={handleCustomChange} onBlur={handleCustomBlur} />
+                                </div>
+                            </details>
+
+                            <details className="group bg-gray-900/30 rounded-lg border border-gray-700 open:bg-gray-900/50 transition"><summary className="p-3 cursor-pointer font-bold text-sm text-blue-400 flex justify-between items-center">RSI Parameters <i className="ph-bold ph-caret-down group-open:rotate-180 transition"></i></summary>
+                                <div className="p-3 pt-0 grid grid-cols-2 gap-3 border-t border-gray-700/50 mt-2">
+                                    <InputGroup label="BUY LOWER" name="RSI_BUY_LOWER" val={params.custom_settings.RSI_BUY_LOWER} onChange={handleCustomChange} onBlur={handleCustomBlur} />
+                                    <InputGroup label="BUY UPPER" name="RSI_BUY_UPPER" val={params.custom_settings.RSI_BUY_UPPER} onChange={handleCustomChange} onBlur={handleCustomBlur} />
+                                    <InputGroup label="SELL LOWER" name="RSI_SELL_LOWER" val={params.custom_settings.RSI_SELL_LOWER} onChange={handleCustomChange} onBlur={handleCustomBlur} />
+                                    <InputGroup label="SELL UPPER" name="RSI_SELL_UPPER" val={params.custom_settings.RSI_SELL_UPPER} onChange={handleCustomChange} onBlur={handleCustomBlur} />
+                                </div>
+                            </details>
+
+                            <details className="group bg-gray-900/30 rounded-lg border border-gray-700 open:bg-gray-900/50 transition"><summary className="p-3 cursor-pointer font-bold text-sm text-red-400 flex justify-between items-center">Risk (ATR) <i className="ph-bold ph-caret-down group-open:rotate-180 transition"></i></summary>
+                                <div className="p-3 pt-0 grid grid-cols-3 gap-3 border-t border-gray-700/50 mt-2">
+                                    <InputGroup label="STOP" name="STOP_LOSS_ATR" val={params.custom_settings.STOP_LOSS_ATR} step="0.1" onChange={handleCustomChange} onBlur={handleCustomBlur} />
+                                    <InputGroup label="TRIGGER" name="TRAIL_TRIGGER_ATR" val={params.custom_settings.TRAIL_TRIGGER_ATR} step="0.1" onChange={handleCustomChange} onBlur={handleCustomBlur} />
+                                    <InputGroup label="DIST" name="TRAIL_DIST_ATR" val={params.custom_settings.TRAIL_DIST_ATR} step="0.1" onChange={handleCustomChange} onBlur={handleCustomBlur} />
+                                </div>
+                            </details>
                         </div>
                         <div className="mt-6 pt-4 border-t border-gray-700 space-y-3">
                             {/* [NEW] Checkbox Group with Real Portfolio */}
                             <div className="flex flex-wrap gap-4 text-xs text-gray-400 bg-gray-900/50 p-3 rounded border border-gray-700">
-                                <label className="flex items-center gap-2 cursor-pointer hover:text-white"><input type="checkbox" checked={params.update_data} onChange={(e)=>setParams({...params, update_data: e.target.checked})} /> <span>데이터 갱신</span></label>
+                                <label className="flex items-center gap-2 cursor-pointer hover:text-white"><input type="checkbox" checked={params.update_data} onChange={(e) => setParams({ ...params, update_data: e.target.checked })} /> <span>데이터 갱신</span></label>
                                 <div className="w-full h-px bg-gray-700 my-1"></div>
-                                <label className="flex items-center gap-2 cursor-pointer hover:text-yellow-400"><input type="checkbox" checked={params.is_batch} onChange={()=>handleModeChange('batch')} /> <span>일괄 테스트 (Batch)</span></label>
-                                <label className="flex items-center gap-2 cursor-pointer hover:text-green-400"><input type="checkbox" checked={params.is_real_portfolio} onChange={()=>handleModeChange('real')} /> <span>리얼 포트폴리오 (Real PF)</span></label>
+                                <label className="flex items-center gap-2 cursor-pointer hover:text-yellow-400"><input type="checkbox" checked={params.is_batch} onChange={() => handleModeChange('batch')} /> <span>일괄 테스트 (Batch)</span></label>
+                                <label className="flex items-center gap-2 cursor-pointer hover:text-green-400"><input type="checkbox" checked={params.is_real_portfolio} onChange={() => handleModeChange('real')} /> <span>리얼 포트폴리오 (Real PF)</span></label>
                             </div>
-                            <button onClick={runExperiment} disabled={loading} className={`w-full py-3 rounded-lg font-bold text-white shadow-lg flex justify-center items-center gap-2 ${loading?'bg-gray-700':'bg-purple-600 hover:bg-purple-500'}`}>{loading ? <i className="ph ph-spinner animate-spin text-xl"></i> : <i className="ph ph-play text-xl"></i>} 실행</button>
+                            <button onClick={runExperiment} disabled={loading} className={`w-full py-3 rounded-lg font-bold text-white shadow-lg flex justify-center items-center gap-2 ${loading ? 'bg-gray-700' : 'bg-purple-600 hover:bg-purple-500'}`}>{loading ? <i className="ph ph-spinner animate-spin text-xl"></i> : <i className="ph ph-play text-xl"></i>} 실행</button>
                         </div>
                     </div>
 
@@ -616,28 +955,28 @@ const [history, setHistory] = useState([]);
                             <div className="flex-1 relative bg-gray-900/50 rounded-lg border border-gray-700/50">
                                 {graphList.length > 0 ? <canvas ref={chartRef}></canvas> : <div className="flex items-center justify-center h-full text-gray-600 text-sm">실행 결과 또는 이력을 선택하세요.</div>}
                             </div>
-                            {result && (<div className="mt-3 flex gap-3 text-xs md:text-sm overflow-x-auto whitespace-nowrap scrollbar-hide"><span className="bg-gray-900 px-2 py-1 rounded border border-gray-700">ROI <b className={result.roi>=0?"text-green-400":"text-red-400"}>{result.roi}%</b></span><span className="bg-gray-900 px-2 py-1 rounded border border-gray-700">MDD <b className="text-red-400">-{result.mdd}%</b></span><span className="bg-gray-900 px-2 py-1 rounded border border-gray-700 text-gray-400">{result.symbol}</span></div>)}
+                            {result && (<div className="mt-3 flex gap-3 text-xs md:text-sm overflow-x-auto whitespace-nowrap scrollbar-hide"><span className="bg-gray-900 px-2 py-1 rounded border border-gray-700">ROI <b className={result.roi >= 0 ? "text-green-400" : "text-red-400"}>{result.roi}%</b></span><span className="bg-gray-900 px-2 py-1 rounded border border-gray-700">MDD <b className="text-red-400">-{result.mdd}%</b></span><span className="bg-gray-900 px-2 py-1 rounded border border-gray-700 text-gray-400">{result.symbol}</span></div>)}
                         </div>
 
                         {/* History List */}
                         <div className="bg-gray-800 p-4 md:p-6 rounded-xl shadow-lg border border-gray-700 flex-1 flex flex-col overflow-hidden">
                             <h3 className="text-base md:text-lg font-semibold text-gray-300 mb-4"><i className="ph ph-clock-counter-clockwise text-yellow-400"></i> 이력</h3>
                             <div className="flex-1 overflow-auto custom-scroll bg-gray-900 rounded-lg border border-gray-700 p-2">
-                                
+
                                 {/* [Mobile] Card View */}
                                 <div className="md:hidden space-y-2">
                                     {history.map(row => (
                                         <div key={row.id} className="bg-gray-800 p-3 rounded border border-gray-700 flex justify-between items-center">
                                             <div>
                                                 <button onClick={() => fetchGraphData(row)} className="text-left font-bold text-white text-sm hover:text-blue-400 underline decoration-dotted underline-offset-4">{row.symbol}</button>
-                                                <div className="text-[10px] text-gray-500 mt-1">{row.timestamp.substring(5,16)}</div>
+                                                <div className="text-[10px] text-gray-500 mt-1">{row.timestamp.substring(5, 16)}</div>
                                             </div>
                                             <div className="flex items-center gap-3">
                                                 <div className="text-right mr-2">
-                                                    <div className={`font-bold text-sm ${row.roi>=0?'text-green-400':'text-red-400'}`}>{row.roi}%</div>
+                                                    <div className={`font-bold text-sm ${row.roi >= 0 ? 'text-green-400' : 'text-red-400'}`}>{row.roi}%</div>
                                                 </div>
                                                 <button onClick={() => setMobileModalData(row.params)} className="text-lg text-blue-400"><i className="ph-bold ph-info"></i></button>
-                                                <button onClick={()=>deleteRecord(row.id)} className="text-red-400"><i className="ph-bold ph-trash text-lg"></i></button>
+                                                <button onClick={() => deleteRecord(row.id)} className="text-red-400"><i className="ph-bold ph-trash text-lg"></i></button>
                                             </div>
                                         </div>
                                     ))}
@@ -651,23 +990,23 @@ const [history, setHistory] = useState([]);
                                     <tbody>
                                         {history.map(row => (
                                             <tr key={row.id} className="hover:bg-gray-800/50 border-b border-gray-800 transition">
-                                                <td className="p-3">{row.timestamp.substring(5,16)}</td>
+                                                <td className="p-3">{row.timestamp.substring(5, 16)}</td>
                                                 <td className="p-3">
                                                     <button onClick={() => fetchGraphData(row)} className="font-bold text-white hover:text-blue-400 hover:underline">{row.symbol}</button>
                                                 </td>
-                                                <td className={`p-3 font-bold ${row.roi>=0?'text-green-400':'text-red-400'}`}>{row.roi}%</td>
+                                                <td className={`p-3 font-bold ${row.roi >= 0 ? 'text-green-400' : 'text-red-400'}`}>{row.roi}%</td>
                                                 <td className="p-3 text-red-400">-{row.mdd}%</td>
-                                                
+
                                                 {/* Desktop Tooltip */}
                                                 <td className="p-3 text-center relative">
-                                                    <button onClick={() => toggleTooltip(row.id)} className={`text-lg transition ${activeTooltipId===row.id ? 'text-white':'text-gray-500 hover:text-blue-400'}`}>
+                                                    <button onClick={() => toggleTooltip(row.id)} className={`text-lg transition ${activeTooltipId === row.id ? 'text-white' : 'text-gray-500 hover:text-blue-400'}`}>
                                                         <i className="ph-bold ph-info"></i>
                                                     </button>
                                                     {activeTooltipId === row.id && (
                                                         <div className="tooltip-box">
                                                             <div className="flex justify-between items-center mb-2 border-b border-gray-600 pb-1">
                                                                 <span className="font-bold text-xs text-blue-400">Configuration</span>
-                                                                <button onClick={(e) => {e.stopPropagation(); toggleTooltip(null);}} className="text-gray-400 hover:text-white"><i className="ph-bold ph-x"></i></button>
+                                                                <button onClick={(e) => { e.stopPropagation(); toggleTooltip(null); }} className="text-gray-400 hover:text-white"><i className="ph-bold ph-x"></i></button>
                                                             </div>
                                                             {formatParams(row.params)}
                                                         </div>
@@ -675,8 +1014,8 @@ const [history, setHistory] = useState([]);
                                                 </td>
 
                                                 <td className="p-3 text-right space-x-2">
-                                                    {row.csv_path && <button onClick={()=>window.location.href=`/api/backtest/download/${row.id}`} className="text-blue-400 hover:text-white"><i className="ph-bold ph-download-simple"></i></button>}
-                                                    <button onClick={()=>deleteRecord(row.id)} className="text-gray-500 hover:text-red-400"><i className="ph-bold ph-trash"></i></button>
+                                                    {row.csv_path && <button onClick={() => window.location.href = `/api/backtest/download/${row.id}`} className="text-blue-400 hover:text-white"><i className="ph-bold ph-download-simple"></i></button>}
+                                                    <button onClick={() => deleteRecord(row.id)} className="text-gray-500 hover:text-red-400"><i className="ph-bold ph-trash"></i></button>
                                                 </td>
                                             </tr>
                                         ))}
@@ -739,7 +1078,7 @@ const [history, setHistory] = useState([]);
                 try {
                     await axios.post('/api/reset_balance', { amount: Number(targetBalance) });
                     alert("초기화 완료");
-                } catch(e) {
+                } catch (e) {
                     alert("초기화 실패");
                 }
             };
@@ -748,7 +1087,7 @@ const [history, setHistory] = useState([]);
 
             return (
                 <div className="bg-gray-800 p-6 md:p-8 rounded-xl shadow-lg border border-gray-700 animate-fade-in max-w-4xl mx-auto pb-24 md:pb-8 space-y-8">
-                    
+
                     {/* [NEW] Paper Trading Balance Manager */}
                     <div>
                         <div className="flex justify-between items-center mb-4 border-b border-gray-700 pb-2">
@@ -765,16 +1104,16 @@ const [history, setHistory] = useState([]);
                             <div className="flex gap-2">
                                 <div className="flex-1">
                                     <label className="text-xs text-gray-500 block mb-1">초기화 금액 설정</label>
-                                    <input 
-                                        type="number" 
-                                        value={targetBalance} 
+                                    <input
+                                        type="number"
+                                        value={targetBalance}
                                         onChange={(e) => setTargetBalance(e.target.value)}
                                         disabled={isPaperRunning}
-                                        className="w-full bg-gray-800 text-white p-3 rounded border border-gray-600 disabled:opacity-50 disabled:cursor-not-allowed" 
+                                        className="w-full bg-gray-800 text-white p-3 rounded border border-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
                                     />
                                 </div>
-                                <button 
-                                    onClick={handleResetBalance} 
+                                <button
+                                    onClick={handleResetBalance}
                                     disabled={isPaperRunning}
                                     className="px-4 py-3 bg-green-600 hover:bg-green-500 disabled:bg-gray-700 disabled:cursor-not-allowed text-white rounded-lg font-bold shadow text-sm whitespace-nowrap"
                                 >
@@ -794,14 +1133,14 @@ const [history, setHistory] = useState([]);
                             <div className="md:col-span-2"><label className="text-xs text-blue-300 block mb-1">Symbols</label><input type="text" name="SYMBOLS" value={formData.SYMBOLS || ''} onChange={handleChange} className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600 text-sm font-mono" /></div>
                             <div><label className="text-xs text-gray-400 block mb-1">Leverage</label><input type="number" name="LEVERAGE" value={formData.LEVERAGE || 1} onChange={handleChange} className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600" /></div>
                             <div><label className="text-xs text-gray-400 block mb-1">Max Positions</label><input type="number" name="MAX_OPEN_POSITIONS" value={formData.MAX_OPEN_POSITIONS || 3} onChange={handleChange} className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600" /></div>
-                            
+
                             {/* ATR 관련 필드 */}
                             <div className="md:col-span-2"><h3 className="text-sm font-bold text-red-400 mt-2">ATR (리스크 관리)</h3></div>
                             <div><label className="text-xs text-gray-500 block mb-1">STOP_LOSS_ATR</label><input type="number" step="0.1" name="STOP_LOSS_ATR" value={formData.STOP_LOSS_ATR || 0.0} onChange={handleChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" /></div>
                             <div><label className="text-xs text-gray-500 block mb-1">TRAIL_TRIGGER_ATR</label><input type="number" step="0.1" name="TRAIL_TRIGGER_ATR" value={formData.TRAIL_TRIGGER_ATR || 0.0} onChange={handleChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" /></div>
                             <div><label className="text-xs text-gray-500 block mb-1">TRAIL_DIST_ATR</label><input type="number" step="0.1" name="TRAIL_DIST_ATR" value={formData.TRAIL_DIST_ATR || 0.0} onChange={handleChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" /></div>
 
-                            {['RSI_BUY_LOWER','RSI_BUY_UPPER','RSI_SELL_LOWER','RSI_SELL_UPPER'].map(f => (
+                            {['RSI_BUY_LOWER', 'RSI_BUY_UPPER', 'RSI_SELL_LOWER', 'RSI_SELL_UPPER'].map(f => (
                                 <div key={f}><label className="text-xs text-gray-500 block mb-1">{f}</label><input type="number" name={f} value={formData[f] || 0} onChange={handleChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" /></div>
                             ))}
                         </div>
@@ -811,7 +1150,7 @@ const [history, setHistory] = useState([]);
         };
 
         // ------------------------------------------------------------------
-        // [Main App] with Responsive Navigation
+        // [Main App] with Mode Visualization
         // ------------------------------------------------------------------
         function App() {
             const [status, setStatus] = useState(null);
@@ -819,19 +1158,36 @@ const [history, setHistory] = useState([]);
             const [activeTab, setActiveTab] = useState("dashboard");
             const [config, setConfig] = useState({});
 
-            const fetchStatus = async () => { try { const res = await axios.get('/api/status'); setStatus(res.data); } catch(e){} };
-            const fetchConfig = async () => { try { const res = await axios.get('/api/config'); setConfig(res.data); } catch(e){} };
+            const fetchStatus = async () => { try { const res = await axios.get('/api/status'); setStatus(res.data); } catch (e) { } };
+            const fetchConfig = async () => { try { const res = await axios.get('/api/config'); setConfig(res.data); } catch (e) { } };
 
             useEffect(() => { fetchStatus(); fetchConfig(); const i = setInterval(fetchStatus, 2000); return () => clearInterval(i); }, []);
 
             useEffect(() => {
-                const ws = new WebSocket(`${window.location.protocol==='https:'?'wss:':'ws:'}//${window.location.host}/ws/logs`);
-                ws.onmessage = (e) => { if (!e.data.startsWith("{")) setLogs(p=>[...p.slice(-99), {time: new Date().toLocaleTimeString(), msg: e.data.replace(/\[.*?\]/g,'').trim()}]); };
+                const ws = new WebSocket(`${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/logs`);
+                ws.onmessage = (e) => { if (!e.data.startsWith("{")) setLogs(p => [...p.slice(-99), { time: new Date().toLocaleTimeString(), msg: e.data.replace(/\[.*?\]/g, '').trim() }]); };
                 return () => ws.close();
             }, []);
 
-            const sendCommand = async (cmd, val) => { if(confirm("실행하시겠습니까?")) try{ await axios.post('/api/control', {command:cmd, value:val}); fetchStatus(); }catch(e){} };
-            const forceClose = async (sym) => { if(confirm("청산하시겠습니까?")) try{ await axios.post(`/api/trade/close/${encodeURIComponent(sym)}`); }catch(e){} };
+            const sendCommand = async (cmd, val) => { if (confirm("실행하시겠습니까?")) try { await axios.post('/api/control', { command: cmd, value: val }); fetchStatus(); } catch (e) { } };
+            const forceClose = async (sym) => { if (confirm("청산하시겠습니까?")) try { await axios.post(`/api/trade/close/${encodeURIComponent(sym)}`); } catch (e) { } };
+
+            // [NEW] 모드별 스타일 정의
+            const getModeStyle = (m) => {
+                if (m === 'REAL') return {
+                    color: 'text-red-400', bg: 'bg-red-900/30', border: 'border-red-500',
+                    icon: 'ph-lightning-fill', label: 'LIVE TRADING', animate: 'animate-pulse', badge: 'bg-red-500'
+                };
+                if (m === 'PAPER') return {
+                    color: 'text-green-400', bg: 'bg-green-900/30', border: 'border-green-500',
+                    icon: 'ph-flask-fill', label: 'SIMULATION', animate: 'animate-pulse', badge: 'bg-green-500'
+                };
+                return {
+                    color: 'text-gray-400', bg: 'bg-gray-800', border: 'border-gray-600',
+                    icon: 'ph-pause-circle-fill', label: 'SYSTEM OFF', animate: '', badge: 'bg-gray-500'
+                };
+            };
+            const modeStyle = getModeStyle(status?.mode);
 
             // Mobile Bottom Nav Items
             const navItems = [
@@ -843,28 +1199,52 @@ const [history, setHistory] = useState([]);
 
             return (
                 <div className="max-w-[1600px] mx-auto p-4 font-sans">
-                    {/* Desktop Header */}
+                    {/* [Modified] Desktop Header with Visual Status */}
                     <header className="hidden md:flex justify-between items-center bg-gray-800 p-4 rounded-xl shadow-xl border border-gray-700 gap-4 mb-6">
                         <div className="flex items-center gap-4">
                             <div className="p-2 bg-blue-600 rounded-lg"><i className="ph-fill ph-robot text-2xl text-white"></i></div>
-                            <div><h1 className="text-xl font-bold text-white">QuantBot V2</h1><span className="text-xs text-gray-400">Hybrid AI Trading System</span></div>
+                            <div>
+                                <h1 className="text-xl font-bold text-white">QuantBot V2</h1>
+                                <div className="flex items-center gap-3 mt-1">
+                                    {/* System Mode Indicator */}
+                                    <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-bold border transition-all ${modeStyle.bg} ${modeStyle.color} ${modeStyle.border} ${modeStyle.animate}`}>
+                                        <i className={`ph-fill ${modeStyle.icon}`}></i>
+                                        {modeStyle.label}
+                                    </div>
+
+                                    {/* Discord Status Indicator */}
+                                    <div className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold border transition-colors ${status?.discord_active ? 'bg-indigo-900/40 text-indigo-400 border-indigo-500/50' : 'bg-gray-700/50 text-gray-500 border-gray-600'}`}>
+                                        <i className="ph-fill ph-discord-logo"></i>
+                                        {status?.discord_active ? 'DISCORD ON' : 'DISCORD OFF'}
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                         <div className="flex bg-gray-900 rounded-lg p-1 border border-gray-600">
                             {navItems.map(item => (
-                                <button key={item.id} onClick={() => setActiveTab(item.id)} className={`px-5 py-2 rounded-md text-sm font-bold transition capitalize ${activeTab===item.id?'bg-blue-600 text-white':'text-gray-400 hover:text-white'}`}>
+                                <button key={item.id} onClick={() => setActiveTab(item.id)} className={`px-5 py-2 rounded-md text-sm font-bold transition capitalize ${activeTab === item.id ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'}`}>
                                     {item.id === 'lab' ? 'Lab (Backtest)' : item.id}
                                 </button>
                             ))}
                         </div>
                     </header>
 
-                    {/* Mobile Header (Simple) */}
+                    {/* [Modified] Mobile Header with Visual Status */}
                     <header className="md:hidden flex justify-between items-center mb-4 px-2">
                         <div className="flex items-center gap-2">
                             <div className="p-1.5 bg-blue-600 rounded"><i className="ph-fill ph-robot text-lg text-white"></i></div>
                             <h1 className="text-lg font-bold text-white">QuantBot</h1>
                         </div>
-                        <span className={`text-[10px] px-2 py-0.5 rounded-full border ${status?.mode==='REAL'?'border-red-500 text-red-400':'border-green-500 text-green-400'}`}>{status?.mode || 'OFF'}</span>
+                        <div className="flex items-center gap-2">
+                            {/* Discord Icon */}
+                            <i className={`ph-fill ph-discord-logo text-xl transition-colors ${status?.discord_active ? 'text-indigo-400 animate-pulse' : 'text-gray-700'}`}></i>
+
+                            {/* Mode Badge (Red/Green/Gray) */}
+                            <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full border font-bold transition-all shadow-lg ${modeStyle.bg} ${modeStyle.border} ${modeStyle.color} ${modeStyle.animate}`}>
+                                <i className={`ph-fill ${modeStyle.icon}`}></i>
+                                <span className="text-[10px]">{status?.mode || 'OFF'}</span>
+                            </div>
+                        </div>
                     </header>
 
                     {/* Main Content */}
@@ -878,8 +1258,8 @@ const [history, setHistory] = useState([]);
                     {/* Mobile Bottom Navigation */}
                     <div className="md:hidden fixed bottom-0 left-0 right-0 bg-gray-900/95 backdrop-blur border-t border-gray-800 flex justify-around items-center h-16 pb-safe z-50">
                         {navItems.map(item => (
-                            <button key={item.id} onClick={() => setActiveTab(item.id)} className={`flex flex-col items-center justify-center w-full h-full ${activeTab===item.id?'text-blue-400':'text-gray-500'}`}>
-                                <i className={`ph ${activeTab===item.id ? item.icon+'-fill' : item.icon} text-2xl mb-0.5`}></i>
+                            <button key={item.id} onClick={() => setActiveTab(item.id)} className={`flex flex-col items-center justify-center w-full h-full ${activeTab === item.id ? 'text-blue-400' : 'text-gray-500'}`}>
+                                <i className={`ph ${activeTab === item.id ? item.icon + '-fill' : item.icon} text-2xl mb-0.5`}></i>
                                 <span className="text-[10px] font-medium">{item.label}</span>
                             </button>
                         ))}
@@ -891,4 +1271,5 @@ const [history, setHistory] = useState([]);
         root.render(<App />);
     </script>
 </body>
+
 </html>

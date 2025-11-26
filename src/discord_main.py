@@ -83,32 +83,6 @@ async def heartbeat_loop():
         await loop.run_in_executor(None, requests.get, HEARTBEAT_URL)
     except: pass
 
-@tasks.loop(hours=1)
-async def hourly_trade_loop():
-    if not bot.trader: return
-    print(f"\n⏰ [Hourly Loop] 매매 로직 시작")
-    try:
-        # [Modified] await 추가
-        result = await bot.trader.run_logic()
-        if bot.hub:
-            await bot.hub.log(result, level="SYSTEM", send_to_discord=True)
-            
-        # [Modified] await 추가
-        free, total = await bot.trader.get_balance()
-        positions = await bot.trader.get_positions()
-        
-        status_data = {
-            "type": "status_update",
-            "balance": {"free": free, "total": total},
-            "positions": positions,
-            "mode": bot.trader.mode
-        }
-        await bot.hub.broadcast_status(status_data)
-            
-    except Exception as e:
-        if bot.hub:
-            await bot.hub.log(f"매매 루프 에러: {e}", level="ERROR")
-
 @tasks.loop(hours=24)
 async def auto_retraining_loop():
     if not bot.trader: return
@@ -142,11 +116,17 @@ async def before_retraining():
 @bot.event
 async def on_ready():
     print(f'🤖 디스코드 봇 로그인: {bot.user}')
-    if not hourly_trade_loop.is_running(): hourly_trade_loop.start()
+    
+    # 연결 성공 시 웹 UI 로그 패널에 알림 전송
+    if bot.hub:
+        await bot.hub.log("✅ [SYSTEM] 디스코드 봇이 연결되었습니다.", level="INFO", send_to_discord=False)
+
+    # 매매 루프 시작 코드(hourly_trade_loop.start)는 여기서 제거됨 (main.py로 이관)
+
     if not auto_retraining_loop.is_running(): auto_retraining_loop.start()
     if not heartbeat_loop.is_running(): heartbeat_loop.start()
     
-    # [NEW] 펀딩비 동기화 루프 실행 (비동기 태스크로 등록)
+    # 펀딩비 동기화 루프 실행 (비동기 태스크로 등록)
     if bot.trader:
         asyncio.create_task(bot.trader.sync_funding_fee_loop())
 
@@ -324,8 +304,6 @@ async def start_discord_bot(shared_trader, shared_hub):
         print(msg)
         await shared_hub.log(msg, level="WARN", send_to_discord=False)
         
-        # 봇 로그인 없이 루프만 수동 실행
-        if not hourly_trade_loop.is_running(): hourly_trade_loop.start()
         if not auto_retraining_loop.is_running(): auto_retraining_loop.start()
         
         # [Modified] 펀딩비 루프 실행 (비동기)
