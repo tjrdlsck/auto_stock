@@ -70,6 +70,7 @@ class BinanceTrader:
         
         # 모델 캐싱 저장소
         self.models = {} 
+        self.model_metas = {}
 
         # 전략 내부 상수
         self.EMA_PERIOD = 20
@@ -274,6 +275,7 @@ class BinanceTrader:
     # -----------------------------------------------------------
     async def _save_trade_history(self, symbol, side, entry_price, exit_price, amount, real_fee=None, trade_type='TRADE', 
                                   strategy=None, entry_regime=None, exit_reason=None, duration=0):
+        # 1. 수수료 계산
         if real_fee is not None:
             total_fee = real_fee
         else:
@@ -286,6 +288,7 @@ class BinanceTrader:
         net_pnl = 0.0
         roi = 0.0
         
+        # 2. PnL 및 ROI 계산
         if trade_type == 'TRADE':
             if side == 'buy': 
                 raw_pnl = (exit_price - entry_price) * amount
@@ -294,12 +297,21 @@ class BinanceTrader:
             
             net_pnl = raw_pnl - total_fee
             
-            # ROI 계산 (레버리지 반영된 투입 증거금 대비 수익률)
-            # 투입 증거금 = (Entry Price * Amount) / Leverage
-            leverage = self.get_conf('LEVERAGE', 1.0)
-            invested_margin = (entry_price * amount) / leverage if leverage > 0 else (entry_price * amount)
-            if invested_margin > 0:
-                roi = (net_pnl / invested_margin) * 100
+            # [FIX] 안전한 ROI 계산 (ZeroDivisionError 방지)
+            try:
+                leverage = float(self.get_conf('LEVERAGE', 1.0))
+                if leverage <= 0: leverage = 1.0 # 레버리지 0 방지
+                
+                # 투입 증거금 = (진입가 * 수량) / 레버리지
+                invested_margin = (entry_price * amount) / leverage
+                
+                if invested_margin > 0.00000001: # 0에 가까운 수 방지
+                    roi = (net_pnl / invested_margin) * 100
+                else:
+                    roi = 0.0
+            except Exception as e:
+                print(f"⚠️ ROI Calculation Error: {e}")
+                roi = 0.0
 
         elif trade_type == 'FUNDING':
             net_pnl = -total_fee
@@ -307,6 +319,7 @@ class BinanceTrader:
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         trade_id_val = f"{trade_type}_{int(datetime.now().timestamp()*1000)}_{symbol}"
         
+        # 3. DB 저장
         async with aiosqlite.connect(self.db_path) as db:
             try:
                 await db.execute('''
@@ -377,6 +390,7 @@ class BinanceTrader:
     async def export_history_csv(self, target_mode):
         """
         특정 모드의 거래 기록을 CSV 포맷 문자열로 내보냅니다.
+        분석을 위해 가능한 모든 상세 데이터를 포함합니다.
         """
         import pandas as pd
         import io
@@ -396,73 +410,114 @@ class BinanceTrader:
         data = [dict(row) for row in rows]
         df = pd.DataFrame(data, columns=columns)
         
-        # 보기 좋게 컬럼 정렬 및 포맷팅 (선택 사항)
-        output_cols = ['timestamp', 'symbol', 'side', 'entry_price', 'exit_price', 'amount', 'pnl', 'roi', 'fee', 'entry_regime', 'exit_reason', 'duration']
-        # 존재하는 컬럼만 선택
-        final_cols = [c for c in output_cols if c in df.columns]
+        # [FIX] 분석용 컬럼 순서 재정렬 및 확장 (누락 방지)
+        target_cols = [
+            'timestamp', 'symbol', 'side', 'type', 'strategy', 
+            'entry_regime', 'exit_reason', 'duration',
+            'entry_price', 'exit_price', 'amount', 'leverage', # leverage는 DB에 없으면 계산 필요하지만 일단 제외
+            'pnl', 'roi', 'fee', 'trade_id'
+        ]
+        
+        # 실제 DB에 존재하는 컬럼만 교집합으로 선택하여 순서 정렬
+        final_cols = [c for c in target_cols if c in df.columns]
+        
+        # 만약 target_cols에 없는 나머지 컬럼이 있다면 뒤에 붙임 (데이터 손실 방지)
+        remaining_cols = [c for c in df.columns if c not in final_cols and c not in ['id', 'mode']]
+        final_cols.extend(remaining_cols)
+        
         df = df[final_cols]
 
         # CSV 버퍼에 쓰기
         stream = io.StringIO()
         df.to_csv(stream, index=False)
         return stream.getvalue()
+    
     # -----------------------------------------------------------
     # [Model Management] Caching & Loading
     # -----------------------------------------------------------
     async def load_models(self):
-        print("🧠 AI 모델 메모리 로딩 시작...")
+        print("🧠 AI 모델 및 기준표(Metadata) 메모리 로딩 시작...")
         loaded_count = 0
         if not os.path.exists(MODELS_DIR):
             print("⚠️ 모델 디렉토리가 없습니다.")
             return
 
         for filename in os.listdir(MODELS_DIR):
+            # .pkl 파일만 찾음
             if filename.endswith(".pkl"):
                 symbol_key = filename.replace("hmm_", "").replace(".pkl", "")
-                path = os.path.join(MODELS_DIR, filename)
+                
+                # 파일 경로 설정
+                model_path = os.path.join(MODELS_DIR, filename)
+                # 메타데이터 파일명 추정 (Phase 1에서 저장한 규칙: hmm_{symbol}_meta.json)
+                meta_filename = filename.replace(".pkl", "_meta.json")
+                meta_path = os.path.join(MODELS_DIR, meta_filename)
+
                 try:
-                    model = joblib.load(path)
+                    # 1. 모델 로드
+                    model = joblib.load(model_path)
                     self.models[symbol_key] = model
+                    
+                    # 2. 메타데이터(기준표) 로드 [NEW]
+                    if os.path.exists(meta_path):
+                        with open(meta_path, 'r', encoding='utf-8') as f:
+                            self.model_metas[symbol_key] = json.load(f)
+                    else:
+                        # 메타파일이 없으면 None 처리 (구버전 호환용)
+                        print(f"⚠️ [{symbol_key}] 기준표 파일(_meta.json)이 없습니다. (Fallback 모드 작동)")
+                        self.model_metas[symbol_key] = None
+
                     loaded_count += 1
                 except Exception as e:
-                    print(f"❌ 모델 로드 실패 ({filename}): {e}")
+                    print(f"❌ 모델/메타 로드 실패 ({filename}): {e}")
         
-        print(f"✅ 총 {loaded_count}개 모델 로드 완료.")
+        print(f"✅ 총 {loaded_count}개 모델 세트 로드 완료.")
 
     def get_hmm_regime(self, df, symbol):
         clean_symbol = symbol.replace('/', '')
         model = self.models.get(clean_symbol)
+        meta = self.model_metas.get(clean_symbol) # 로드된 기준표 가져오기
+        
         if model is None: return None, None
 
         try:
+            # 피처 데이터 추출
             X = df[['Log_Returns_Scaled', 'Range_Vol_Scaled', 'RSI_14_Scaled', 'OBV_Scaled']].values
+            
+            # HMM 예측 (0, 1, 2 중 하나의 숫자 반환)
             hidden_states = model.predict(X)
+            current_state = int(hidden_states[-1]) # 가장 최근 캔들의 상태
+            
+            # -----------------------------------------------------------
+            # [핵심 수정] 저장된 기준표(Meta)를 우선 사용 (절대평가)
+            # -----------------------------------------------------------
+            if meta is not None:
+                # meta 구조: {'bull': 2, 'bear': 0, 'sideways': 1}
+                # 반환값 1: 현재 상태 번호 (예: 0)
+                # 반환값 2: 맵핑 딕셔너리 (run_logic에서 r_map['bull']과 비교함)
+                return current_state, meta
+
+            # -----------------------------------------------------------
+            # [Fallback] 기준표가 없을 때만 기존 방식 사용 (상대평가)
+            # (Phase 1을 실행하지 않았을 경우를 대비한 안전장치)
+            # -----------------------------------------------------------
             stats = pd.DataFrame(X, columns=['Ret', 'Vol', 'RSI', 'OBV'])
             stats['Regime'] = hidden_states
             regime_means = stats.groupby('Regime')['Ret'].mean()
-            bear_id = regime_means.idxmin()
-            bull_id = regime_means.idxmax()
-            sideways_id = list(set(range(model.n_components)) - {bull_id, bear_id})[0] if model.n_components > 2 else None
-            return hidden_states[-1], {'bull': bull_id, 'bear': bear_id, 'sideways': sideways_id}
+            
+            bear_id = int(regime_means.idxmin())
+            bull_id = int(regime_means.idxmax())
+            
+            # 남은 하나를 횡보(Sideways)로 정의
+            all_ids = set(range(model.n_components))
+            sideways_id = list(all_ids - {bull_id, bear_id})[0] if model.n_components > 2 else None
+            
+            fallback_map = {'bull': bull_id, 'bear': bear_id, 'sideways': sideways_id}
+            return current_state, fallback_map
+
         except Exception as e:
             print(f"⚠️ Regime detection failed for {symbol}: {e}")
             return None, None
-
-    async def fetch_data_and_features(self, symbol):
-        try:
-            timeframe = self.get_conf('TIMEFRAME', '1h')
-            limit = self.get_conf('CANDLE_LIMIT', 300)
-            candles = await self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-            if not candles: return None
-            
-            df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
-            df.set_index('timestamp', inplace=True)
-            df = apply_features(df)
-            return df
-        except Exception as e:
-            print(f"❌ Data Fetch Error ({symbol}): {e}")
-            return None
 
     # -----------------------------------------------------------
     # [Execution] Async Orders
@@ -497,25 +552,206 @@ class BinanceTrader:
             except Exception as e:
                 await self.notification.log(f"🚨 [실매매 실패] {symbol} {side}: {e}", level="ERROR")
                 return None, None
+    async def execute_smart_order(self, symbol, side, amount, reduce_only=False):
+        """
+        [Phase 4 수정] Smart Execution (WAP 계산 + Dust 방지 + ID 리스트 반환)
+        Returns: (weighted_avg_price, [order_ids], exec_type)
+        """
+        # 모의투자: 즉시 처리 (단일 ID 리스트 반환으로 통일)
+        if self.mode == 'PAPER':
+            slippage = self.get_conf('SLIPPAGE_PCT', 0.0002)
+            ticker = await self.exchange.fetch_ticker(symbol)
+            curr_price = ticker['last']
+            exec_price = curr_price * (1 + slippage) if side == 'buy' else curr_price * (1 - slippage)
+            sim_id = f"SIM_{int(datetime.now().timestamp()*1000)}"
+            return exec_price, [sim_id], 'MARKET'
 
-    async def _fetch_real_commission(self, symbol, order_id):
-        if self.mode != 'REAL': return 0.0
+        if self.mode != 'REAL': return None, [], None
+
+        # REAL 모드 설정
+        priority = self.get_conf('ORDER_TYPE_PRIORITY', 'LIMIT')
+        attempts = self.get_conf('LIMIT_ORDER_ATTEMPTS', 2)
+        timeout = self.get_conf('LIMIT_ORDER_TIMEOUT_SEC', 10)
+        force_market = self.get_conf('FORCE_MARKET_ORDER_ON_TIMEOUT', True)
+        
+        # 체결 데이터 추적용 변수
+        executed_ids = []
+        total_filled_qty = 0.0
+        total_filled_val = 0.0 # qty * price
+        
+        # 1. MARKET 우선 설정 시
+        if priority == 'MARKET':
+            try:
+                params = {'reduceOnly': True} if reduce_only else {}
+                order = await self.exchange.create_market_order(symbol, side, amount, params)
+                return order['average'], [order['id']], 'MARKET'
+            except Exception as e:
+                print(f"❌ Market Order Fail: {e}")
+                return None, [], None
+
+        # 2. LIMIT 우선 (지정가 시도 루프)
+        remaining_amount = amount
+        
+        for i in range(attempts):
+            try:
+                ticker = await self.exchange.fetch_ticker(symbol)
+                target_price = ticker['bid'] if side == 'buy' else ticker['ask']
+                
+                params = {'reduceOnly': True} if reduce_only else {}
+                
+                print(f"Try Limit {i+1}/{attempts}: {symbol} {side} {remaining_amount} @ {target_price}")
+                order = await self.exchange.create_limit_order(symbol, side, remaining_amount, target_price, params)
+                current_order_id = order['id']
+                
+                # 대기
+                await asyncio.sleep(timeout)
+                
+                # 상태 확인
+                order_status = await self.exchange.fetch_order(current_order_id, symbol)
+                filled = float(order_status['filled'])
+                avg_price = float(order_status['average']) if order_status['average'] else target_price
+                
+                # 체결된 수량이 있다면 기록
+                if filled > 0:
+                    executed_ids.append(current_order_id)
+                    total_filled_qty += filled
+                    total_filled_val += (filled * avg_price)
+                    remaining_amount -= filled
+                
+                # 완전 체결 시 종료
+                if remaining_amount <= 0:
+                    final_wap = total_filled_val / total_filled_qty
+                    return final_wap, executed_ids, 'LIMIT'
+                
+                # 미체결 잔량 존재 -> 주문 취소하고 다음 시도
+                # (이미 체결된 부분은 위에서 기록했으므로 취소해도 안전)
+                if order_status['status'] == 'open':
+                    await self.exchange.cancel_order(current_order_id, symbol)
+
+            except Exception as e:
+                print(f"⚠️ Limit Attempt {i+1} Error: {e}")
+                await asyncio.sleep(1)
+
+        # 3. Fallback: 시장가 전환 (Dust Check 추가)
+        if force_market and remaining_amount > 0:
+            try:
+                # [Phase 4] 최소 주문 금액 체크 (약 5.5 USDT 안전마진)
+                ticker = await self.exchange.fetch_ticker(symbol)
+                est_value = remaining_amount * ticker['last']
+                
+                if est_value < 5.5:
+                    print(f"⚠️ 남은 잔량 가치(${est_value:.2f})가 최소 주문 금액 미달로 시장가 전환 포기.")
+                    # 지금까지 체결된 것만이라도 반환
+                    if total_filled_qty > 0:
+                        final_wap = total_filled_val / total_filled_qty
+                        return final_wap, executed_ids, 'MIXED'
+                    return None, [], None
+
+                print(f"🚀 {symbol} 지정가 실패 -> 남은 {remaining_amount} 시장가 전환")
+                params = {'reduceOnly': True} if reduce_only else {}
+                order = await self.exchange.create_market_order(symbol, side, remaining_amount, params)
+                
+                executed_ids.append(order['id'])
+                market_filled = float(order['filled'])
+                market_price = float(order['average'])
+                
+                total_filled_qty += market_filled
+                total_filled_val += (market_filled * market_price)
+                
+                final_wap = total_filled_val / total_filled_qty
+                return final_wap, executed_ids, 'MIXED' # Limit+Market 섞임
+                
+            except Exception as e:
+                print(f"❌ Market Fallback Fail: {e}")
+                
+                # 실패했더라도 기존에 일부 지정가 체결된 게 있다면 반환
+                if total_filled_qty > 0:
+                     final_wap = total_filled_val / total_filled_qty
+                     return final_wap, executed_ids, 'LIMIT'
+                return None, [], None
+        
+        # 시장가 전환 옵션이 꺼져있거나 실패했을 때, 체결된 게 있으면 반환
+        if total_filled_qty > 0:
+            final_wap = total_filled_val / total_filled_qty
+            return final_wap, executed_ids, 'LIMIT'
+            
+        return None, [], None
+
+    async def _fetch_real_commission(self, symbol, order_ids):
+        """
+        [Phase 4 수정] 단일 ID가 아닌 ID 리스트를 받아 합산 수수료를 계산합니다.
+        부분 체결이나 Limit+Market 혼합 체결 시 모든 수수료를 누락 없이 집계합니다.
+        """
+        if self.mode != 'REAL' or not order_ids: return 0.0
+        
         try:
-            trades = await self.exchange.fetch_my_trades(symbol, limit=10)
+            # 문자열로 변환하여 비교 준비
+            target_ids = set(str(oid) for oid in order_ids)
+            
+            # 최근 거래 내역 조회
+            trades = await self.exchange.fetch_my_trades(symbol, limit=50)
             total_fee = 0.0
+            
+            # BNB 가격 캐싱 (함수 내 1회 조회)
+            bnb_price = 0.0
+            use_bnb_calc = self.get_conf('USE_BNB_FEE_DISCOUNT', False)
+            
             for t in trades:
-                if str(t['info']['orderId']) == str(order_id):
+                # 거래 내역의 orderId가 우리 목록에 있는지 확인
+                if str(t['info']['orderId']) in target_ids:
                     if 'fee' in t:
                         cost = float(t['fee']['cost'])
                         currency = t['fee']['currency']
-                        if currency == 'USDT': total_fee += cost
+                        
+                        if currency == 'USDT':
+                            total_fee += cost
+                        elif currency == 'BNB':
+                            if bnb_price == 0 and use_bnb_calc:
+                                try:
+                                    ticker = await self.exchange.fetch_ticker('BNB/USDT')
+                                    bnb_price = ticker['last']
+                                except:
+                                    bnb_price = 0
+                            
+                            if bnb_price > 0:
+                                total_fee += (cost * bnb_price)
+                                
             return total_fee
-        except: return 0.0
+        except Exception as e:
+            print(f"⚠️ Fee fetch error: {e}")
+            return 0.0
+
+    # -----------------------------------------------------------
+    # [Data Fetching]
+    # -----------------------------------------------------------
+    async def fetch_data_and_features(self, symbol):
+        """Binance에서 OHLCV 데이터 가져와서 피처 엔지니어링 적용"""
+        try:
+            # [수정됨] 하드코딩된 '1h' 제거 -> 설정값(TIMEFRAME) 로드
+            # 설정이 없으면 기본값 '1h' 사용
+            timeframe = self.get_conf('TIMEFRAME', '1h')
+            
+            # 1. 캔들 데이터 가져오기 (최근 300개)
+            ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=300)
+            
+            # 2. DataFrame 변환
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            
+            # 3. 피처 엔지니어링 (중앙 집중식 함수)
+            df = apply_features(df)
+            
+            return df
+        except Exception as e:
+            # [개선] 단순 print 대신 상세 로그 출력 (어떤 심볼에서 실패했는지 식별)
+            print(f"⚠️ Data Fetch Error ({symbol}, TF={self.get_conf('TIMEFRAME', '1h')}): {e}")
+            return None
 
     # -----------------------------------------------------------
     # [Main Logic Loop]
     # -----------------------------------------------------------
     async def run_logic(self):
+        """[Phase 4 수정] 메인 매매 로직 (WAP 및 ID 리스트 처리 반영)"""
         if not self.is_initialized: await self.initialize()
 
         async with self.trade_lock:
@@ -533,14 +769,12 @@ class BinanceTrader:
                 df = await self.fetch_data_and_features(symbol)
                 if df is None or len(df) < 30: continue
                 
-                # [Fix] Look-Ahead Bias 방지 (확정된 캔들 사용)
                 current_price = df['close'].iloc[-1] 
                 prev_close = df['close'].iloc[-2]
                 prev_rsi = df['RSI_14'].iloc[-2]
                 prev_ema = df[f'EMA_{self.EMA_PERIOD}'].iloc[-2]
                 prev_atr = df['ATRr_14'].iloc[-2]
 
-                # [Fix] Regime 판단도 확정 캔들 기준
                 regime, r_map = self.get_hmm_regime(df.iloc[:-1], symbol)
                 if regime is None: continue
                 
@@ -567,11 +801,11 @@ class BinanceTrader:
                     should_close = False
                     reason = ""
                     
-                    # 1. 하드 스탑 (실시간 가격)
+                    # 1. 하드 스탑
                     if side == 'buy' and current_price < stop_loss: should_close = True; reason = "StopLoss"
                     elif side == 'sell' and current_price > stop_loss: should_close = True; reason = "StopLoss"
                     
-                    # 2. 트레일링 스탑 (실시간 가격)
+                    # 2. 트레일링 스탑
                     if not should_close:
                         updated = False
                         if side == 'buy':
@@ -590,7 +824,7 @@ class BinanceTrader:
                         if updated:
                             await self._upsert_position_to_db(symbol, entry_price, high_price, low_price, side, amount, entry_regime, stop_loss)
 
-                    # 3. 국면 전환 (확정 캔들)
+                    # 3. 국면 전환
                     if not should_close:
                         if (entry_regime == 'bull' and regime == r_map['bear']) or \
                            (entry_regime == 'bear' and regime == r_map['bull']):
@@ -598,12 +832,14 @@ class BinanceTrader:
 
                     if should_close:
                         close_side = 'sell' if side == 'buy' else 'buy'
-                        exec_price, order_id = await self.execute_order(symbol, close_side, amount, reduce_only=True)
+                        
+                        # [Phase 4] 리스트 형태의 order_ids 수신
+                        exec_price, order_ids, exec_type = await self.execute_smart_order(symbol, close_side, amount, reduce_only=True)
                         
                         if exec_price:
-                            real_fee = await self._fetch_real_commission(symbol, order_id)
+                            # [Phase 4] 리스트 전달
+                            real_fee = await self._fetch_real_commission(symbol, order_ids)
                             
-                            # [수정됨] 보유 시간(분) 계산
                             duration_min = 0
                             try:
                                 entry_time_str = pos_data.get('entry_time')
@@ -612,7 +848,6 @@ class BinanceTrader:
                                     duration_min = int((datetime.now() - et).total_seconds() / 60)
                             except: pass
 
-                            # [수정됨] 상세 정보 포함하여 저장
                             pnl, _ = await self._save_trade_history(
                                 symbol, side, entry_price, exec_price, amount, 
                                 real_fee=real_fee, 
@@ -622,7 +857,8 @@ class BinanceTrader:
                                 duration=duration_min
                             )
                             
-                            await self.notification.log(f"💰 [{symbol}] 익절/손절 ({reason}) PnL: ${pnl:.2f} (Duration: {duration_min}m)", level="INFO")
+                            type_tag = f"[{exec_type}]" if exec_type else ""
+                            await self.notification.log(f"💰 [{symbol}] 익절/손절 ({reason}) {type_tag} PnL: ${pnl:.2f} (Duration: {duration_min}m)", level="INFO")
                             await self._delete_position_from_db(symbol)
                             self.cooldowns[symbol] = self.COOLDOWN_BARS
                         continue
@@ -640,7 +876,6 @@ class BinanceTrader:
                     signal = None
                     target_regime = None
 
-                    # [Fix] 확정 캔들 기준 진입 판단
                     if regime == r_map['bull']:
                         if prev_close > prev_ema and rsi_buy_low < prev_rsi < rsi_buy_high:
                             signal = 'buy'; target_regime = 'bull'
@@ -658,24 +893,25 @@ class BinanceTrader:
                         allocation = (balance / max_pos) * 0.95
                         qty = (allocation * leverage) / current_price
                         
-                        exec_price, order_id = await self.execute_order(symbol, signal, qty)
+                        # [Phase 4] 리스트 형태의 order_ids 수신
+                        exec_price, order_ids, exec_type = await self.execute_smart_order(symbol, signal, qty)
+                        
                         if exec_price:
                             stop_atr = self.get_conf('STOP_LOSS_ATR', 2.0)
                             sl_dist = prev_atr * stop_atr
                             sl_price = exec_price - sl_dist if signal == 'buy' else exec_price + sl_dist
                             
-                            # [수정됨] 현재 시간을 entry_time으로 함께 저장
                             current_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                             
                             await self._upsert_position_to_db(
                                 symbol, exec_price, exec_price, exec_price, signal, qty, 
                                 target_regime, sl_price, 
-                                entry_time=current_time_str  # 신규 인자 전달
+                                entry_time=current_time_str
                             )
                             
-                            await self.notification.log(f"🚀 [{symbol}] {signal.upper()} 진입 @ {exec_price}", level="INFO")
+                            type_tag = f"[{exec_type}]" if exec_type else ""
+                            await self.notification.log(f"🚀 [{symbol}] {signal.upper()} {type_tag} 진입 @ {exec_price}", level="INFO")
                             
-                            # [Fix] 동시 진입 방지 카운트 즉시 증가
                             current_pos_count += 1
 
             return "✅ 매매 로직 실행 완료"
@@ -684,22 +920,57 @@ class BinanceTrader:
     # [Utils] Sync Funding Loop & Backtest Ops
     # -----------------------------------------------------------
     async def sync_funding_fee_loop(self):
+        """[PAPER 모드 전용] 8시간마다 실시간 펀딩비 적용 (Long은 지불/수령, Short는 반대)"""
+        print("⏳ 펀딩비 동기화 루프 시작...")
         while True:
             try:
                 if self.mode == 'PAPER':
                     now = datetime.utcnow()
+                    # 바이낸스 펀딩비 정산 시간: 00:00, 08:00, 16:00 (UTC)
+                    # 해당 시간대 0~5분 사이에 한 번 실행
                     if now.hour in [0, 8, 16] and now.minute < 5:
                         for sym, pos in list(self.state.items()):
-                            val = pos['amount'] * pos['entry_price']
-                            cost = val * 0.0001
-                            await self._save_trade_history(sym, 'FUNDING', 0, 0, 0, real_fee=cost, trade_type='FUNDING')
+                            try:
+                                # 1. 실시간 펀딩비율 조회
+                                funding = await self.exchange.fetch_funding_rate(sym)
+                                rate = float(funding['fundingRate'])
+                                
+                                # 2. 포지션 가치 계산
+                                position_value = pos['amount'] * pos['entry_price']
+                                
+                                # 3. 펀딩비 계산 (Cost가 양수면 지불, 음수면 수령)
+                                # Long: Rate가 양수면 지불(+), 음수면 수령(-)
+                                # Short: Rate가 양수면 수령(-), 음수면 지불(+)
+                                funding_cost = position_value * rate
+                                
+                                real_fee = 0.0
+                                if pos['side'] == 'buy':
+                                    real_fee = funding_cost
+                                else:
+                                    real_fee = -funding_cost # Short는 반대
+                                
+                                if real_fee != 0:
+                                    # DB에 펀딩비 기록 (비용 처리)
+                                    await self._save_trade_history(sym, 'FUNDING', 0, 0, 0, real_fee=real_fee, trade_type='FUNDING')
+                                    print(f"💸 [Funding] {sym} ({pos['side']}) Rate:{rate*100:.4f}% -> Fee: ${real_fee:.4f}")
+                                    
+                            except Exception as inner_e:
+                                print(f"⚠️ {sym} 펀딩비 계산 실패: {inner_e}")
+                        
+                        # 중복 실행 방지 (1시간 대기)
                         await asyncio.sleep(3600)
+                
+                # 1분마다 시간 체크
                 await asyncio.sleep(60)
             except Exception as e:
                 print(f"Funding Sync Error: {e}")
                 await asyncio.sleep(60)
 
     async def get_backtest_result_data(self, record_id):
+        """
+        백테스트 결과 파일(CSV/ZIP)을 읽어 프론트엔드 그래프용 데이터로 변환합니다.
+        다양한 파일 포맷(Daily, Curve, Summary)과 컬럼명(Date, time, Total_Equity, value)을 자동으로 처리합니다.
+        """
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute("SELECT csv_path, symbol FROM backtest_history WHERE id=?", (record_id,)) as cursor:
                 row = await cursor.fetchone()
@@ -712,45 +983,103 @@ class BinanceTrader:
 
         try:
             results = []
+            
+            # [Helper] 데이터프레임 표준화 함수
+            def process_df(df, label_name="Equity"):
+                # 1. 시간 컬럼 찾기 및 표준화 (time)
+                if 'time' in df.columns:
+                    pass # 이미 존재
+                elif 'Date' in df.columns:
+                    df.rename(columns={'Date': 'time'}, inplace=True)
+                elif 'timestamp' in df.columns:
+                    df.rename(columns={'timestamp': 'time'}, inplace=True)
+                else:
+                    return None # 시간 컬럼 없음
+
+                # 2. 값 컬럼 찾기 및 표준화 (value)
+                val_col = None
+                # 우선순위: value -> Total_Equity -> Portfolio_Value -> Equity
+                candidates = ['value', 'Total_Equity', 'Portfolio_Value', 'Equity']
+                for cand in candidates:
+                    if cand in df.columns:
+                        val_col = cand
+                        break
+                
+                # 못 찾았다면 마지막 숫자형 컬럼 사용 (휴리스틱)
+                if not val_col:
+                    numeric_cols = df.select_dtypes(include=[np.number]).columns
+                    if len(numeric_cols) > 0: val_col = numeric_cols[-1]
+                
+                if not val_col: return None
+
+                # 3. 데이터 추출 (JSON 직렬화 가능 형태)
+                data = []
+                for _, row in df.iterrows():
+                    t_val = str(row['time'])
+                    # 시간 포맷 정리 (YYYY-MM-DD)
+                    if ' ' in t_val: t_val = t_val.split(' ')[0]
+                    
+                    try:
+                        val = float(row[val_col])
+                        if not np.isnan(val):
+                            data.append({"time": t_val, "value": val})
+                    except: pass
+                
+                if not data: return None
+                return {"label": label_name, "data": data}
+
+            # -------------------------------------------------------
+            # Case A: ZIP 파일 처리 (리얼 포트폴리오, 배치 테스트)
+            # -------------------------------------------------------
             if csv_path.endswith('.zip'):
                 with zipfile.ZipFile(csv_path, 'r') as z:
-                    summary_file = next((n for n in z.namelist() if 'Portfolio_Summary.csv' in n), None)
-                    if summary_file:
-                        with z.open(summary_file) as f:
-                            df = pd.read_csv(f)
-                            data = []
-                            for _, row in df.iterrows():
-                                data.append({"time": str(row['Date']), "value": float(row['Total_Equity'])})
-                            results.append({"label": "Total Portfolio", "data": data})
+                    namelist = z.namelist()
                     
-                    for filename in z.namelist():
-                        if filename == summary_file: continue
-                        if not filename.endswith('.csv'): continue
-                        
-                        label = filename.replace('.csv', '')
-                        parts = label.split('_')
-                        if len(parts) >= 3 and parts[0] == 'BT':
-                            symbol_part = "_".join(parts[3:]) 
-                            if symbol_part: label = symbol_part
-                        
-                        with z.open(filename) as f:
+                    # 1. 메인 그래프 찾기 (Portfolio_Curve.csv 또는 Portfolio_Summary.csv)
+                    # Curve: 리얼 포트폴리오용 (time, value)
+                    # Summary: 배치용 (Date, Total_Equity)
+                    main_file = next((n for n in namelist if n in ['Portfolio_Curve.csv', 'Portfolio_Summary.csv']), None)
+                    
+                    if main_file:
+                        with z.open(main_file) as f:
                             df = pd.read_csv(f)
-                            val_col = 'Portfolio_Value'
-                            if val_col not in df.columns: val_col = df.columns[-1] 
-                            coin_data = []
-                            for _, row in df.iterrows():
-                                coin_data.append({"time": str(row['Date']), "value": float(row[val_col])})
-                            results.append({"label": label, "data": coin_data})
-                return results
+                            res = process_df(df, "Total Portfolio")
+                            if res: results.append(res)
+                    
+                    # 2. 개별 자산 그래프 찾기 (선택 사항)
+                    # 배치 테스트의 경우 개별 코인 데이터(BT_...csv)가 있을 수 있음
+                    # 리얼 포트폴리오의 경우 Daily_Stats는 메인과 중복되므로 스킵하거나 추가 가능
+                    # 여기서는 'Portfolio_'로 시작하지 않고 'Trades' 로그가 아닌 CSV만 추가
+                    for filename in namelist:
+                        if filename == main_file: continue
+                        if not filename.endswith('.csv'): continue
+                        if 'Master_Trade_Log' in filename: continue
+                        if 'Daily_Portfolio_Stats' in filename: continue
+                        
+                        # BT_..._Daily.csv 형태 등
+                        if 'BT_' in filename or '_Daily' in filename:
+                            # 심볼명 추출 시도
+                            label = filename.replace('.csv', '').replace('_Daily', '').split('_')[-1]
+                            with z.open(filename) as f:
+                                try:
+                                    df = pd.read_csv(f)
+                                    res = process_df(df, label)
+                                    if res: results.append(res)
+                                except: pass
+
+            # -------------------------------------------------------
+            # Case B: 단일 CSV 파일 처리 (단일 백테스트)
+            # -------------------------------------------------------
             else:
+                # 단일 파일은 보통 BT_..._Daily.csv 임
                 df = pd.read_csv(csv_path)
-                data = []
-                val_col = 'Portfolio_Value' if 'Portfolio_Value' in df.columns else df.columns[-1]
-                for _, row in df.iterrows():
-                    data.append({"time": str(row['Date']), "value": float(row[val_col])})
-                return data
+                res = process_df(df, symbol)
+                if res: results.append(res)
+
+            return results if results else None
+
         except Exception as e:
-            print(f"Error reading backtest file: {e}")
+            print(f"❌ Graph Data Load Error: {e}")
             return None
 
     async def save_backtest_result(self, result):

@@ -1,73 +1,88 @@
 import os
 
 # ---------------------------------------------------------
-# [1] 시스템 경로 설정
+# [1] 시스템 경로 설정 (기존 유지)
 # ---------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 MODELS_DIR = os.path.join(BASE_DIR, 'models')
 
-# 데이터 및 모델 저장 디렉토리 자동 생성
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(MODELS_DIR, exist_ok=True)
 
 # ---------------------------------------------------------
-# [2] 사용자 설정 섹션
+# [2] 사용자 설정 섹션 (업데이트됨)
 # ---------------------------------------------------------
 CONFIG = {
     # 1. 포트폴리오 대상 코인
-    # 다양한 섹터로 분산하는 것이 좋습니다.
     "SYMBOLS": ["BTC/USDT", "ETH/USDT", "SOL/USDT", "DOGE/USDT", "XRP/USDT"],
     
-    # 2. 시간봉 설정 (1시간봉 기준 전략)
+    # 2. 시간봉 설정
     "TIMEFRAME": "1h",
     
-    # 3. 데이터 수집 기간 (일)
-    # HMM 학습을 위해 충분한 과거 데이터가 필요합니다.
+    # 3. 데이터 수집 기간
     "FETCH_DAYS": 1500,
     
-    # 4. 기본 레버리지
-    # 백테스팅 및 실매매 공통 적용
+    # 4. 레버리지
     "LEVERAGE": 2.0,
     
-    # 5. 거래 비용 설정 (바이낸스 선물 기준 근사치)
-    "COMMISSION": 0.0005,  # 수수료 0.05%
-    "SLIPPAGE_PCT": 0.0002, # 슬리피지 0.02% 가정
+    # -----------------------------------------------------
+    # [5. 수수료 및 슬리피지 설정 (고도화됨)]
+    # -----------------------------------------------------
+    # 구버전 호환용 (백테스트에서 Taker 기준 보수적 적용 시 사용)
+    "COMMISSION": 0.0005,
+    
+    # [NEW] 상세 수수료 설정 (Binance VIP 0 기준)
+    "MAKER_FEE": 0.0002,  # 0.02% (지정가 체결 시)
+    "TAKER_FEE": 0.0005,  # 0.05% (시장가 체결 시)
+    
+    # [NEW] BNB 수수료 할인 사용 여부 (실매매 PnL 보정용)
+    # True일 경우 실매매 로직에서 BNB 가격을 조회하여 수수료를 환산 계산함
+    "USE_BNB_FEE_DISCOUNT": True,
+    
+    # 백테스팅용 슬리피지 가정치
+    "SLIPPAGE_PCT": 0.0002, 
     
     # -----------------------------------------------------
-    # [NEW] 6. 자금 관리 (Portfolio Management)
+    # [6. 스마트 주문 실행 설정 (Smart Execution)]
     # -----------------------------------------------------
-    # 동시에 보유할 수 있는 최대 코인 개수입니다.
-    # 예: 3으로 설정 시, 전체 자금을 3등분하여 진입하며 4번째 코인은 진입하지 않습니다.
+    # 주문 우선순위: "LIMIT" (지정가 시도 후 시장가) 또는 "MARKET" (즉시 시장가)
+    "ORDER_TYPE_PRIORITY": "LIMIT",
+    
+    # 지정가 주문 시도 횟수 (예: 2회 시도 후 미체결 시 시장가 전환)
+    "LIMIT_ORDER_ATTEMPTS": 2,
+    
+    # 지정가 주문 대기 시간 (초 단위)
+    "LIMIT_ORDER_TIMEOUT_SEC": 10,
+    
+    # 타임아웃/실패 시 시장가로 강제 집행 여부
+    "FORCE_MARKET_ORDER_ON_TIMEOUT": True,
+    
+    # -----------------------------------------------------
+    # [7. 자금 관리 (Portfolio Management)]
+    # -----------------------------------------------------
     "MAX_OPEN_POSITIONS": 2,
     
     # -----------------------------------------------------
-    # [NEW] 7. 전략 파라미터 (V13 - Unconstrained Trend)
+    # [8. 전략 파라미터 (HMM Strategy)]
     # -----------------------------------------------------
-    # 7-1. 진입 조건 (RSI 필터 완화)
-    # Bull 진입: Price > EMA & RSI가 [30, 65] 사이
+    # 진입 조건
     "RSI_BUY_LOWER": 30,
     "RSI_BUY_UPPER": 65,
-    
-    # Bear 진입: Price < EMA & RSI가 [35, 70] 사이
-    "RSI_SELL_LOWER": 20,
+    "RSI_SELL_LOWER": 30,
     "RSI_SELL_UPPER": 75,
     
-    # 7-2. 청산 및 관리 조건 (ATR 기반 동적 대응)
-    "STOP_LOSS_ATR": 2.5,      # 진입 시 초기 손절 거리 (ATR x 2)
-    "TRAIL_TRIGGER_ATR": 2.0,  # 수익이 ATR x 2 이상 발생 시 트레일링 시작
-    "TRAIL_DIST_ATR": 2.0,     # 고점(Long)/저점(Short)에서 ATR x 2 간격 유지
+    # 청산 및 관리 조건 (ATR 기반)
+    "STOP_LOSS_ATR": 2.5,
+    "TRAIL_TRIGGER_ATR": 2.0,
+    "TRAIL_DIST_ATR": 2.0,
     
     # -----------------------------------------------------
-    # [NEW] 8. 자동화 설정
+    # [9. 시스템 설정]
     # -----------------------------------------------------
-    "RETRAIN_INTERVAL_HOURS": 24, # 24시간마다 AI 모델 재학습 수행
-    
-    # 9. 시스템 실행 설정
+    "RETRAIN_INTERVAL_HOURS": 24,
     "GENERATE_BACKTEST_IMAGES": True,
-    "LIMIT_ORDER_TIMEOUT_SEC": 10,      # 지정가 주문 대기 시간
-    "FORCE_MARKET_ORDER_ON_TIMEOUT": True, # 시간 초과 시 시장가 전환 여부
-    "CANDLE_LIMIT": 300,                # 지표 계산을 위해 가져올 최소 캔들 수
+    "CANDLE_LIMIT": 300,
 }
 
-print(f"✅ 설정 로드 완료: {len(CONFIG['SYMBOLS'])}개 심볼 타겟팅, 포트폴리오 슬롯: {CONFIG['MAX_OPEN_POSITIONS']}개")
+print(f"✅ 설정 로드 완료: {len(CONFIG['SYMBOLS'])}개 심볼, 수수료 체계: Maker({CONFIG['MAKER_FEE']})/Taker({CONFIG['TAKER_FEE']})")

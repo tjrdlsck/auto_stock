@@ -29,23 +29,24 @@ class HMMData(bt.feeds.PandasData):
         ('openinterest', -1),
     )
 
+# [수정] 슬리피지 로직 제거 및 순수 수수료 클래스로 변경
 class FuturesComm(bt.CommInfoBase):
     params = (
         ('stocklike', False), 
         ('commtype', bt.CommInfoBase.COMM_PERC),
         ('perc', 0.0005), 
-        ('leverage', 1.0),
-        ('slippage_perc', 0.0)
+        ('leverage', 1.0)
     )
+
     def _getcommission(self, size, price, pseudoexec=None, **kwargs):
-        commission = super()._getcommission(size, price, pseudoexec, **kwargs)
-        slippage_cost = abs(size) * price * self.p.slippage_perc
-        return commission + slippage_cost
+        # 슬리피지 비용 가산 로직 제거 (Broker 레벨에서 처리됨)
+        return super()._getcommission(size, price, pseudoexec, **kwargs)
+
     def get_margin(self, price): 
         return price / self.p.leverage
 
 # --------------------------------------------------------- 
-# [EXISTING] 개별 코인용 전략 (기존 유지)
+# [EXISTING] 개별 코인용 전략 (데이터 정밀도 및 안전장치 강화판)
 # --------------------------------------------------------- 
 class HMM_Pro_Strategy_V5(bt.Strategy):
     params = (
@@ -71,58 +72,102 @@ class HMM_Pro_Strategy_V5(bt.Strategy):
         self.stop_price = 0.0
         self.cooldown = 0
         
-        self.last_exit_price = 0.0
-        self.last_size = 0.0 
+        # [데이터 추적 고도화]
+        self.entry_metadata = {} # 진입 시점의 정보 저장 (Size, Regime 등)
+        self.exit_reason = "Manual/End" 
         
-        self.trade_log = []
-        self.daily_stats = []
+        self.trade_log = []   # 상세 매매 기록 (CSV 저장용)
+        self.daily_stats = [] # 일별 통계
         self.csv_path = ""
 
     def notify_order(self, order):
         if order.status in [order.Completed]:
             executed_price = order.executed.price
             executed_size = abs(order.executed.size)
-            self.last_size = executed_size
 
             if order.isbuy():
                 if self.position.size > 0: # Long Entry
                     self.entry_price = executed_price
                     self.stop_price = self.entry_price - (self.atr[0] * self.p.stop_atr)
-                else: # Short Exit
-                    self.last_exit_price = executed_price
+                    # [핵심] 진입 시점 데이터 기록
+                    self.entry_metadata = {
+                        'size': executed_size,
+                        'entry_time': self.data.datetime.datetime(0),
+                        'regime': 'Bull' if int(self.regime[0]) == self.p.bull_id else 'Bear'
+                    }
+                # Exit은 별도 처리 안 함 (notify_trade에서 처리)
+                
             elif order.issell():
                 if self.position.size < 0: # Short Entry
                     self.entry_price = executed_price
                     self.stop_price = self.entry_price + (self.atr[0] * self.p.stop_atr)
-                else: # Long Exit
-                    self.last_exit_price = executed_price
+                    # [핵심] 진입 시점 데이터 기록
+                    self.entry_metadata = {
+                        'size': executed_size,
+                        'entry_time': self.data.datetime.datetime(0),
+                        'regime': 'Bull' if int(self.regime[0]) == self.p.bull_id else 'Bear'
+                    }
             
             self.order = None
             self.cooldown = 0
+            
         elif order.status in [order.Canceled, order.Margin, order.Rejected]:
             self.order = None
 
     def notify_trade(self, trade):
         if not trade.isclosed: return
+        
+        # 1. 데이터 복원 (Entry Metadata 사용)
+        # trade.size는 0이므로, 진입 시 저장해둔 size 사용
+        real_size = self.entry_metadata.get('size', 0.0)
+        
+        # 메타데이터가 없을 경우(예외) history에서 복구 시도
+        if real_size == 0 and trade.history:
+            real_size = abs(trade.history[0].event.size)
+            
+        entry_time = self.entry_metadata.get('entry_time', bt.num2date(trade.dtopen))
+        entry_regime = self.entry_metadata.get('regime', 'Unknown')
+        
+        # 2. 안전한 계산 (ZeroDivision 방지)
         pnl_net = trade.pnlcomm
         pnl_gross = trade.pnl
-        real_size = self.last_size if self.last_size > 0 else abs(trade.size)
-        entry_val = real_size * trade.price
-        pnl_pct = (pnl_net / entry_val) * 100 if entry_val > 0 else 0.0
-        final_exit_price = self.last_exit_price if self.last_exit_price > 0 else (trade.price + (pnl_gross/real_size if real_size > 0 else 0))
+        
+        # Exit Price 역산
+        final_exit_price = trade.price
+        if real_size > 0:
+            final_exit_price = trade.price + (pnl_gross / real_size)
+            
+        # ROI 계산
+        safe_leverage = self.p.leverage if self.p.leverage > 0 else 1.0
+        entry_val = (trade.price * real_size) / safe_leverage
+        
+        roi_pct = 0.0
+        if entry_val != 0:
+            roi_pct = (pnl_net / entry_val) * 100
 
+        # Duration
+        exit_time = bt.num2date(trade.dtclose)
+        duration = exit_time - entry_time
+
+        # 3. 로그 적재 (Master Log 포맷)
         self.trade_log.append({
             'Symbol': self.data._name,
             'Type': 'Long' if trade.long else 'Short',
-            'Entry_Date': bt.num2date(trade.dtopen).strftime('%Y-%m-%d %H:%M'),
-            'Exit_Date': bt.num2date(trade.dtclose).strftime('%Y-%m-%d %H:%M'),
+            'Entry_Time': entry_time,
+            'Exit_Time': exit_time,
+            'Duration_Hours': duration.total_seconds() / 3600,
             'Entry_Price': trade.price,
             'Exit_Price': final_exit_price,
             'Size': real_size,
             'PnL': pnl_net,
-            'ROI': pnl_pct,
-            'Duration': trade.barlen
+            'Fee': trade.commission,
+            'ROI': roi_pct,
+            'Entry_Regime': entry_regime,
+            'Exit_Reason': self.exit_reason
         })
+        
+        # 청산 후 이유 초기화
+        self.exit_reason = "Manual/End" 
 
     def next(self):
         # 1. 일별 통계 기록
@@ -139,6 +184,7 @@ class HMM_Pro_Strategy_V5(bt.Strategy):
             'Portfolio_Value': self.broker.getvalue()
         })
         
+        # Funding Fee Simulation
         dt = self.data.datetime.datetime(0)
         if dt.minute == 0 and dt.hour in [0, 8, 16]:
             if self.position.size != 0:
@@ -155,28 +201,50 @@ class HMM_Pro_Strategy_V5(bt.Strategy):
         ema = self.ema[0]
         if self.cooldown > 0: self.cooldown -= 1
 
+        # [청산 로직]
         if self.position.size != 0:
+            should_close = False
+            reason = ""
+            
             if self.position.size > 0: # Long
-                if self.data.low[0] < self.stop_price: self.close(); self.cooldown = self.p.cooldown_bars; return
-                if close > self.entry_price + (atr * self.p.trail_trigger):
+                if self.data.low[0] < self.stop_price: 
+                    should_close = True; reason = "StopLoss"
+                elif close > self.entry_price + (atr * self.p.trail_trigger):
                     new_stop = close - (atr * self.p.trail_dist)
                     if new_stop > self.stop_price: self.stop_price = new_stop
-                if regime == self.p.bear_id: self.close(); self.cooldown = self.p.cooldown_bars; return
+                elif regime == self.p.bear_id: 
+                    should_close = True; reason = "RegimeChange(Bear)"
+                    
             elif self.position.size < 0: # Short
-                if self.data.high[0] > self.stop_price: self.close(); self.cooldown = self.p.cooldown_bars; return
-                if close < self.entry_price - (atr * self.p.trail_trigger):
+                if self.data.high[0] > self.stop_price: 
+                    should_close = True; reason = "StopLoss"
+                elif close < self.entry_price - (atr * self.p.trail_trigger):
                     new_stop = close + (atr * self.p.trail_dist)
                     if new_stop < self.stop_price: self.stop_price = new_stop
-                if regime == self.p.bull_id: self.close(); self.cooldown = self.p.cooldown_bars; return
+                elif regime == self.p.bull_id: 
+                    should_close = True; reason = "RegimeChange(Bull)"
+            
+            if should_close:
+                self.exit_reason = reason # 청산 사유 기록
+                self.close()
+                self.cooldown = self.p.cooldown_bars
+                return
         
+        # [진입 로직]
         elif self.position.size == 0 and self.cooldown == 0:
             cash = self.broker.get_cash()
             if cash <= 0: return
             
             total_equity = self.broker.getvalue()
-            allocation = total_equity / self.p.max_positions
+            
+            # [FIX] 안전한 나눗셈
+            max_pos = self.p.max_positions if self.p.max_positions > 0 else 1
+            allocation = total_equity / max_pos
             target_value = allocation * 0.95 * self.p.leverage
-            size = target_value / close
+            
+            size = 0
+            if close > 0:
+                size = target_value / close
             
             if size < 0.000001: return 
 
@@ -188,57 +256,95 @@ class HMM_Pro_Strategy_V5(bt.Strategy):
                     self.order = self.sell(size=size)
 
     def stop(self):
+        save_dir = self.p.output_dir
+        if not save_dir: return
+
+        # 1. Master Trade Log (통합 거래 대장 - 상세 분석용)
+        if self.trade_records:
+            df_trades = pd.DataFrame(self.trade_records)
+            df_trades.sort_values(by='Entry_Time', inplace=True)
+            df_trades.to_csv(os.path.join(save_dir, 'Master_Trade_Log.csv'), index=False)
+            
+        # 2. Daily Portfolio Stats (전체 포트폴리오 자산 흐름)
         if self.daily_stats:
             df_stats = pd.DataFrame(self.daily_stats)
-            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-            clean_sym = self.data._name.replace('/', '')
-            filename = f"BT_{ts}_{clean_sym}.csv"
+            df_stats.drop_duplicates(subset=['Date'], keep='last', inplace=True)
+            df_stats.to_csv(os.path.join(save_dir, 'Daily_Portfolio_Stats.csv'), index=False)
+
+        # 3. [수정됨] Asset Equity Curves (개별 코인 자산 흐름 통합 저장)
+        # 기존: 코인별로 BT_...csv 파일 수십 개 생성 (지저분함)
+        # 변경: Asset_Equity_Curves.csv 하나에 날짜별로 컬럼을 만들어 저장
+        try:
+            combined_df = pd.DataFrame()
             
-            if self.p.output_dir:
-                save_dir = self.p.output_dir
-            else:
-                save_dir = os.path.join(DATA_DIR, 'backtests')
-            
-            if not os.path.exists(save_dir):
-                os.makedirs(save_dir, exist_ok=True)
+            for name, history in self.pnl_history.items():
+                if not history: continue
                 
-            full_path = os.path.join(save_dir, filename)
-            df_stats.to_csv(full_path, index=False)
-            self.csv_path = full_path
+                # 개별 히스토리 DF 생성
+                df_coin = pd.DataFrame(history)
+                df_coin['Date'] = pd.to_datetime(df_coin['Date'])
+                df_coin.set_index('Date', inplace=True)
+                
+                # 컬럼명 변경 (Portfolio_Value -> 코인심볼)
+                clean_name = name.replace('/', '')
+                df_coin.rename(columns={'Portfolio_Value': clean_name}, inplace=True)
+                
+                # 중복 제거 (하루에 여러 틱이 있을 경우 마지막 값 사용)
+                df_coin = df_coin[~df_coin.index.duplicated(keep='last')]
+                
+                # 통합 DF에 병합
+                if combined_df.empty:
+                    combined_df = df_coin
+                else:
+                    combined_df = combined_df.join(df_coin, how='outer')
+            
+            if not combined_df.empty:
+                combined_df.sort_index(inplace=True)
+                combined_df.fillna(method='ffill', inplace=True) # 앞의 값으로 채우기
+                combined_df.fillna(0, inplace=True) # 앞의 값 없으면 0
+                combined_df.reset_index(inplace=True)
+                
+                combined_df.to_csv(os.path.join(save_dir, 'Asset_Equity_Curves.csv'), index=False)
+                
+        except Exception as e:
+            print(f"⚠️ 자산 곡선 병합 중 오류: {e}")
 
 # --------------------------------------------------------- 
-# [NEW] 리얼 포트폴리오 전략 (다중 데이터 처리)
+# [NEW] 리얼 포트폴리오 전략 (Size 0 버그 수정판)
 # --------------------------------------------------------- 
 class RealPortfolioStrategy(bt.Strategy):
     params = (
-        ('regime_map', {}), # { 'BTC/USDT': {'bull':1, 'bear':2}, ... }
+        ('regime_map', {}),
         ('max_positions', 3),
         ('leverage', 2.0),
-        ('config', {}),     # 전체 설정 전달
+        ('config', {}),
         ('output_dir', None)
     )
 
     def __init__(self):
-        self.inds = {}      # 각 데이터별 지표 보관
-        self.orders = {}    # 각 데이터별 주문 상태
+        self.inds = {}
+        self.orders = {}
         self.cooldowns = {} 
-        self.stops = {}     # 각 데이터별 스탑로스 가격
-        self.entry_prices = {}
+        self.stops = {}
         
-        # PnL Tracking
-        self.realized_pnl = defaultdict(float) # 확정 손익 (누적)
-        self.pnl_history = defaultdict(list)   # 그래프용 히스토리
-        self.portfolio_history = []            # 전체 Equity 히스토리
-        self.trade_log = []                    # 매매 일지
+        # [데이터 추적용]
+        # entry_metadata에 'size'를 저장하여 청산 시 참조합니다.
+        self.entry_metadata = {} 
+        self.exit_reasons = {}
+        
+        self.trade_records = []
+        self.daily_stats = []
+        self.pnl_history = defaultdict(list)
+        self.realized_pnl = defaultdict(float)
 
         for d in self.datas:
             name = d._name
             self.orders[name] = None
             self.cooldowns[name] = 0
             self.stops[name] = 0.0
-            self.entry_prices[name] = 0.0
+            self.entry_metadata[name] = {}
+            self.exit_reasons[name] = "Manual/End"
             
-            # 지표 생성 (백트레이더 내장 지표 사용 - pandas_ta와 미세 오차 있음)
             cfg = self.p.config
             atr = bt.indicators.ATR(d, period=int(cfg.get('ATR_PERIOD', 14)))
             rsi = bt.indicators.RSI(d, period=int(cfg.get('RSI_PERIOD', 14)))
@@ -249,20 +355,25 @@ class RealPortfolioStrategy(bt.Strategy):
     def notify_order(self, order):
         name = order.data._name
         if order.status in [order.Completed]:
-            if order.isbuy():
-                if self.getposition(order.data).size > 0: # Long Entry
-                    self.entry_prices[name] = order.executed.price
-                    # ATR 기반 스탑로스 설정
-                    atr_val = self.inds[name]['atr'][0]
-                    stop_atr = float(self.p.config.get('STOP_LOSS_ATR', 2.0))
+            # [진입] Buy or Sell Entry
+            # 포지션이 생긴 시점의 정보를 기록합니다.
+            if (order.isbuy() and self.getposition(order.data).size > 0) or \
+               (order.issell() and self.getposition(order.data).size < 0):
+                
+                self.entry_metadata[name] = {
+                    'entry_price': order.executed.price,
+                    'entry_time': order.data.datetime.datetime(0),
+                    'size': abs(order.executed.size), # [핵심] 진입 사이즈 기록!
+                    'regime': 'Bull' if self.inds[name].get('curr_regime') == self.p.regime_map[name]['bull'] else 'Bear'
+                }
+                
+                atr_val = self.inds[name]['atr'][0]
+                stop_atr = float(self.p.config.get('STOP_LOSS_ATR', 2.0))
+                if order.isbuy():
                     self.stops[name] = order.executed.price - (atr_val * stop_atr)
-            elif order.issell():
-                if self.getposition(order.data).size < 0: # Short Entry
-                    self.entry_prices[name] = order.executed.price
-                    atr_val = self.inds[name]['atr'][0]
-                    stop_atr = float(self.p.config.get('STOP_LOSS_ATR', 2.0))
+                else:
                     self.stops[name] = order.executed.price + (atr_val * stop_atr)
-            
+
             self.orders[name] = None
             self.cooldowns[name] = 0
             
@@ -273,53 +384,78 @@ class RealPortfolioStrategy(bt.Strategy):
         if not trade.isclosed: return
         name = trade.data._name
         
-        # 실현 손익 누적
-        pnl = trade.pnlcomm # 수수료 포함 손익
-        self.realized_pnl[name] += pnl
+        pnl_net = trade.pnlcomm
+        self.realized_pnl[name] += pnl_net
         
-        # 로그 기록
-        self.trade_log.append({
+        # 저장해둔 메타데이터 불러오기
+        meta = self.entry_metadata.get(name, {})
+        entry_time = meta.get('entry_time', bt.num2date(trade.dtopen))
+        
+        # [핵심 수정] trade.size는 0이므로, 진입 시 저장한 size를 사용
+        real_size = meta.get('size', 0.0)
+        
+        # 만약 메타데이터가 꼬여서 size가 없다면, history에서 추론 (안전장치)
+        if real_size == 0 and trade.history:
+            real_size = abs(trade.history[0].event.size)
+
+        exit_time = bt.num2date(trade.dtclose)
+        duration = exit_time - entry_time
+        
+        # ROI 계산 (레버리지 반영)
+        # real_size를 사용하므로 0으로 나누는 일 없음
+        safe_leverage = self.p.leverage if self.p.leverage > 0 else 1.0
+        entry_val = (trade.price * real_size) / safe_leverage
+        
+        roi_pct = 0.0
+        if entry_val != 0:
+            roi_pct = (pnl_net / entry_val) * 100
+
+        # Exit Price 역산
+        exit_price_approx = trade.price
+        if real_size != 0:
+            # PnL = (Exit - Entry) * Size  => Exit = Entry + (PnL/Size) (Long 기준)
+            # Short도 PnL 부호가 반대라 수식 동일
+            exit_price_approx = trade.price + (trade.pnl / real_size)
+
+        self.trade_records.append({
             'Symbol': name,
-            'Type': 'Long' if trade.long else 'Short',
-            'Entry_Date': bt.num2date(trade.dtopen).strftime('%Y-%m-%d %H:%M'),
-            'Exit_Date': bt.num2date(trade.dtclose).strftime('%Y-%m-%d %H:%M'),
+            'Side': 'Long' if trade.long else 'Short',
+            'Entry_Time': entry_time,
+            'Exit_Time': exit_time,
+            'Duration_Hours': duration.total_seconds() / 3600,
             'Entry_Price': trade.price,
-            'Exit_Price': trade.price, # 근사치 (Market Exit)
-            'Size': trade.size,
-            'PnL': pnl,
-            'ROI': 0.0 # 계산 생략
+            'Exit_Price': exit_price_approx,
+            'Size': real_size, # 0.0이 아닌 실제 사이즈 기록
+            'PnL_Net': pnl_net,
+            'Fee': trade.commission,
+            'ROI_Pct': roi_pct,
+            'Entry_Regime': meta.get('regime', 'Unknown'),
+            'Exit_Reason': self.exit_reasons.get(name, 'Unknown')
         })
 
     def next(self):
-        # 1. 전체 포트폴리오 가치 기록
-        total_value = self.broker.getvalue()
-        current_date = self.datas[0].datetime.datetime(0)
+        dt = self.datas[0].datetime.datetime(0)
+        open_positions_count = sum(1 for d in self.datas if self.getposition(d).size != 0)
         
-        self.portfolio_history.append({
-            'Date': current_date,
-            'Total_Equity': total_value
+        self.daily_stats.append({
+            'Date': dt,
+            'Total_Equity': self.broker.getvalue(),
+            'Cash': self.broker.getcash(),
+            'Open_Positions': open_positions_count,
+            'Leverage': self.p.leverage
         })
 
-        # 2. 개별 코인 PnL 기여도 기록 (실현 + 미실현)
         for d in self.datas:
             name = d._name
             pos = self.getposition(d)
             unrealized = 0.0
             if pos.size != 0:
-                # 미실현 손익 계산 (Size * (Current - Entry))
-                # Short인 경우 Size가 음수이므로 로직 동일
                 unrealized = pos.size * (d.close[0] - pos.price)
-            
             total_contribution = self.realized_pnl[name] + unrealized
-            self.pnl_history[name].append({
-                'Date': current_date,
-                'Portfolio_Value': total_contribution # 그래프 라벨 호환용
-            })
+            self.pnl_history[name].append({'Date': dt, 'Portfolio_Value': total_contribution})
 
-        # 3. 매매 로직 (Multi-Asset)
-        # 현재 오픈된 포지션 수 계산
-        open_positions = sum(1 for d in self.datas if self.getposition(d).size != 0)
         max_pos = int(self.p.config.get('MAX_OPEN_POSITIONS', 3))
+        if max_pos <= 0: max_pos = 1
         
         cfg = self.p.config
         rsi_buy_low = float(cfg.get('RSI_BUY_LOWER', 30))
@@ -328,103 +464,89 @@ class RealPortfolioStrategy(bt.Strategy):
         rsi_sell_high = float(cfg.get('RSI_SELL_UPPER', 70))
         trail_trigger = float(cfg.get('TRAIL_TRIGGER_ATR', 2.0))
         trail_dist = float(cfg.get('TRAIL_DIST_ATR', 2.0))
-        cooldown_bars = 2
 
         for d in self.datas:
             name = d._name
             pos = self.getposition(d)
             
-            # 지표 & 상태
             regime_info = self.p.regime_map.get(name)
             if not regime_info: continue
             
             curr_regime = int(d.regime[0])
+            self.inds[name]['curr_regime'] = curr_regime
+            
             inds = self.inds[name]
             atr = inds['atr'][0]
             rsi = inds['rsi'][0]
             ema = inds['ema'][0]
             close = d.close[0]
             
-            # 쿨다운 감소
-            if self.cooldowns[name] > 0:
-                self.cooldowns[name] -= 1
+            if self.cooldowns[name] > 0: self.cooldowns[name] -= 1
 
-            # [청산 로직]
             if pos.size != 0:
                 stop_price = self.stops[name]
-                
-                # Long Exit
-                if pos.size > 0:
-                    # Hard Stop
-                    if d.low[0] < stop_price:
-                        self.close(data=d)
-                        self.cooldowns[name] = cooldown_bars
-                        continue
-                    # Trailing Stop Update
-                    if close > self.entry_prices[name] + (atr * trail_trigger):
+                should_close = False
+                reason = ""
+
+                if pos.size > 0: # Long
+                    if d.low[0] < stop_price: should_close = True; reason = "StopLoss"
+                    elif close > self.entry_metadata[name].get('entry_price', 0) + (atr * trail_trigger):
                         new_stop = close - (atr * trail_dist)
                         if new_stop > stop_price: self.stops[name] = new_stop
-                    # Regime Change
-                    if curr_regime == regime_info['bear']:
-                        self.close(data=d)
-                        self.cooldowns[name] = cooldown_bars
-                        continue
-                        
-                # Short Exit
-                elif pos.size < 0:
-                    # Hard Stop
-                    if d.high[0] > stop_price:
-                        self.close(data=d)
-                        self.cooldowns[name] = cooldown_bars
-                        continue
-                    # Trailing Stop Update
-                    if close < self.entry_prices[name] - (atr * trail_trigger):
+                    elif curr_regime == regime_info['bear']:
+                        should_close = True; reason = "RegimeChange(Bear)"
+                else: # Short
+                    if d.high[0] > stop_price: should_close = True; reason = "StopLoss"
+                    elif close < self.entry_metadata[name].get('entry_price', 0) - (atr * trail_trigger):
                         new_stop = close + (atr * trail_dist)
                         if new_stop < stop_price: self.stops[name] = new_stop
-                    # Regime Change
-                    if curr_regime == regime_info['bull']:
-                        self.close(data=d)
-                        self.cooldowns[name] = cooldown_bars
-                        continue
+                    elif curr_regime == regime_info['bull']:
+                        should_close = True; reason = "RegimeChange(Bull)"
 
-            # [진입 로직]
+                if should_close:
+                    self.exit_reasons[name] = reason
+                    self.close(data=d)
+                    self.cooldowns[name] = 2
+
             elif self.orders[name] is None and self.cooldowns[name] == 0:
-                # 슬롯 제한 체크
-                if open_positions >= max_pos: continue
+                if open_positions_count >= max_pos: continue
                 
-                # 동적 자금 관리: (현재 총자산 / 최대 포지션 수) * 0.95
-                allocation = total_value / max_pos
+                allocation = self.broker.getvalue() / max_pos
                 target_amt = allocation * 0.95 * self.p.leverage
-                size = target_amt / close
+                
+                size = 0
+                if close > 0:
+                    size = target_amt / close
+                
                 if size <= 0: continue
 
                 if curr_regime == regime_info['bull']:
                     if close > ema and rsi_buy_low < rsi < rsi_buy_high:
                         self.orders[name] = self.buy(data=d, size=size)
-                        open_positions += 1 # 즉시 반영
-                
+                        open_positions_count += 1
                 elif curr_regime == regime_info['bear']:
                     if close < ema and rsi_sell_low < rsi < rsi_sell_high:
                         self.orders[name] = self.sell(data=d, size=size)
-                        open_positions += 1
+                        open_positions_count += 1
 
     def stop(self):
-        # 결과 저장 (개별 코인 PnL Curve & 종합 Equity)
         save_dir = self.p.output_dir
         if not save_dir: return
-        
-        # 1. 종합 Equity
-        if self.portfolio_history:
-            df_total = pd.DataFrame(self.portfolio_history)
-            df_total.to_csv(os.path.join(save_dir, 'Portfolio_Summary.csv'), index=False)
+
+        if self.trade_records:
+            df_trades = pd.DataFrame(self.trade_records)
+            df_trades.sort_values(by='Entry_Time', inplace=True)
+            df_trades.to_csv(os.path.join(save_dir, 'Master_Trade_Log.csv'), index=False)
             
-        # 2. 개별 코인 PnL (누적 기여도)
+        if self.daily_stats:
+            df_stats = pd.DataFrame(self.daily_stats)
+            df_stats.drop_duplicates(subset=['Date'], keep='last', inplace=True)
+            df_stats.to_csv(os.path.join(save_dir, 'Daily_Portfolio_Stats.csv'), index=False)
+
         for name, history in self.pnl_history.items():
             if history:
                 df_pnl = pd.DataFrame(history)
                 clean_name = name.replace('/', '')
-                # 기존 포맷과 호환되게 저장 (BT_날짜_심볼.csv 대신 식별 가능한 이름으로)
-                # trader.py가 BT_ 접두사를 파싱하므로 형식을 맞춰줌
                 ts = datetime.now().strftime('%Y%m%d_%H%M%S')
                 filename = f"BT_{ts}_{clean_name}.csv"
                 df_pnl.to_csv(os.path.join(save_dir, filename), index=False)
@@ -438,8 +560,10 @@ def run_walk_forward(symbol, initial_cash=10000.0, train_days=365, test_days=30,
         if log_func: log_func(msg)
         else: print(msg)
 
+    # 1. 설정 로드
     cfg = dynamic_config if dynamic_config else CONFIG
 
+    # 2. 데이터 업데이트 (요청 시)
     if update_data:
         log(f"📥 [{symbol}] 최신 데이터 다운로드 및 갱신 중...")
         try:
@@ -457,6 +581,7 @@ def run_walk_forward(symbol, initial_cash=10000.0, train_days=365, test_days=30,
             log(f"❌ 데이터 갱신 실패: {e}")
             return {"error": str(e)}
 
+    # 3. 데이터 로드 및 분할
     brain = Brain()
     df_full, _ = brain.load_data(symbol)
 
@@ -487,28 +612,57 @@ def run_walk_forward(symbol, initial_cash=10000.0, train_days=365, test_days=30,
     csv_path = ""
 
     try:
+        # 4. 모델 학습 및 국면 식별
         model, df_train_res = brain.train_model(df_train, symbol)
         regime_map, stats = brain.identify_regimes(df_train_res)
         sorted_stats = stats.sort_values()
         bear_id = sorted_stats.index[0]
         bull_id = sorted_stats.index[-1]
 
+        # 5. 테스트 데이터 예측
         test_features = df_test[['Log_Returns_Scaled', 'Range_Vol_Scaled', 'RSI_14_Scaled', 'OBV_Scaled']].values
         df_test['Regime'] = model.predict(test_features)
         
+        # 6. Backtrader 설정
         cerebro = bt.Cerebro()
         data_feed = HMMData(dataname=df_test, name=symbol)
         cerebro.adddata(data_feed)
         
+        # 레버리지 및 포지션 설정
         base_leverage = float(cfg.get('LEVERAGE', 2.0))
+        if base_leverage <= 0: base_leverage = 1.0
+        
         max_pos = int(cfg.get('MAX_OPEN_POSITIONS', 3))
-        is_btc = 'BTC' in symbol
-        lev = base_leverage if is_btc else 1.0 
+        
+        # ------------------------------------------------------------------
+        # [Phase 2 핵심 변경사항] 브로커 및 수수료 설정 고도화
+        # ------------------------------------------------------------------
+        cerebro.broker.setcash(current_cash)
 
+        # A. 슬리피지 설정 (비용 가산 방식이 아닌, 체결 가격 자체를 불리하게 적용)
+        cerebro.broker.set_slippage_perc(
+            perc=float(cfg.get('SLIPPAGE_PCT', 0.0002)),
+            slip_open=True,  # 시가 진입 시에도 적용
+            slip_match=True, # 슬리피지 적용된 가격으로 매칭
+            slip_out=False   # 청산 시에도 적용할지 여부 (False: 보수적 관점 유지)
+        )
+
+        # B. 수수료 설정 (백테스트는 보수적으로 Taker Fee 적용)
+        # config.py에 TAKER_FEE가 없으면 기존 COMMISSION 값(0.0005) 사용
+        taker_fee = float(cfg.get('TAKER_FEE', 0.0005))
+        
+        # 수정된 FuturesComm 클래스 사용 (slippage_perc 파라미터 제거됨)
+        cerebro.broker.addcommissioninfo(FuturesComm(
+            commission=taker_fee,
+            leverage=base_leverage
+        ))
+        # ------------------------------------------------------------------
+
+        # 7. 전략 추가
         cerebro.addstrategy(HMM_Pro_Strategy_V5,
                             bull_id=bull_id, 
                             bear_id=bear_id, 
-                            leverage=lev,
+                            leverage=base_leverage,
                             max_positions=max_pos, 
                             rsi_buy_upper=float(cfg.get('RSI_BUY_UPPER', 65)),
                             rsi_buy_lower=float(cfg.get('RSI_BUY_LOWER', 30)),
@@ -520,13 +674,6 @@ def run_walk_forward(symbol, initial_cash=10000.0, train_days=365, test_days=30,
                             cooldown_bars=2,
                             output_dir=output_dir 
                             )
-        
-        cerebro.broker.setcash(current_cash)
-        cerebro.broker.addcommissioninfo(FuturesComm(
-            commission=float(cfg.get('COMMISSION', 0.0005)), 
-            leverage=lev, 
-            slippage_perc=float(cfg.get('SLIPPAGE_PCT', 0.0002))
-        ))
         
         cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name='trades')
         cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
@@ -546,13 +693,17 @@ def run_walk_forward(symbol, initial_cash=10000.0, train_days=365, test_days=30,
         log(f"❌ 시뮬레이션 에러: {e}")
         return {"error": str(e)}
 
-    total_roi = (current_cash - initial_cash) / initial_cash * 100
+    # 8. 결과 정리
+    total_roi = 0.0
+    if initial_cash > 0:
+        total_roi = (current_cash - initial_cash) / initial_cash * 100
     
     win_trades = [t for t in all_trade_logs if t['PnL'] > 0]
     win_rate = (len(win_trades) / len(all_trade_logs) * 100) if all_trade_logs else 0.0
     
     sorted_trades = sorted(all_trade_logs, key=lambda x: x['Exit_Date'])
     
+    equity_curve = []
     equity_curve.append({"time": df_test.index[0].strftime('%Y-%m-%d'), "value": initial_cash})
     running_pnl = 0
     for t in sorted_trades:
@@ -660,12 +811,9 @@ def run_batch_backtest(initial_cash=10000.0, train_days=365, test_days=30, updat
     }
 
 # --------------------------------------------------------- 
-# [NEW] 리얼 포트폴리오 실행 함수
+# [NEW] 리얼 포트폴리오 실행 함수 (ZeroDivisionError 방지 패치)
 # --------------------------------------------------------- 
 def run_real_portfolio_backtest(initial_cash=10000.0, train_days=365, test_days=30, update_data=False, log_func=None, dynamic_config=None):
-    """
-    모든 코인을 하나의 Cerebro에 넣고, 자금과 슬롯을 공유하며 경쟁하는 리얼 시뮬레이션
-    """
     def log(msg):
         if log_func: log_func(msg)
         else: print(msg)
@@ -675,7 +823,6 @@ def run_real_portfolio_backtest(initial_cash=10000.0, train_days=365, test_days=
     
     log(f"🚀 Real Portfolio Backtest 시작 (Symbols: {len(target_symbols)}개, 자금: ${initial_cash})")
 
-    # 1. 데이터 업데이트 (필요시)
     if update_data:
         log("📥 최신 데이터 업데이트 중...")
         try:
@@ -691,29 +838,38 @@ def run_real_portfolio_backtest(initial_cash=10000.0, train_days=365, test_days=
             log(f"❌ 데이터 업데이트 실패: {e}")
             return {"error": str(e)}
 
-    # 2. Cerebro 설정
+    # [수정] 브로커 설정 고도화 (슬리피지 및 Taker Fee 적용)
     cerebro = bt.Cerebro()
     cerebro.broker.setcash(initial_cash)
+    
+    # 1. 안전한 레버리지 설정
+    lev = float(cfg.get('LEVERAGE', 2.0))
+    if lev <= 0: lev = 1.0
+
+    # 2. 슬리피지 설정 (가격 왜곡 적용)
+    cerebro.broker.set_slippage_perc(
+        perc=float(cfg.get('SLIPPAGE_PCT', 0.0002)),
+        slip_open=True,
+        slip_match=True,
+        slip_out=False
+    )
+    
+    # 3. 수수료 설정 (보수적 Taker Fee)
+    taker_fee = float(cfg.get('TAKER_FEE', 0.0005))
+    
     cerebro.broker.addcommissioninfo(FuturesComm(
-        commission=float(cfg.get('COMMISSION', 0.0005)), 
-        leverage=float(cfg.get('LEVERAGE', 2.0)), 
-        slippage_perc=float(cfg.get('SLIPPAGE_PCT', 0.0002))
+        commission=taker_fee,
+        leverage=lev
     ))
     
-    regime_map_all = {} # {'BTC/USDT': {'bull':0, 'bear':1}, ...}
+    regime_map_all = {} 
     brain = Brain()
+    valid_data_count = 0
     
-    # 3. 데이터 로드 및 학습
-    min_date = None
-    max_date = None
-
     for sym in target_symbols:
         df_full, _ = brain.load_data(sym)
-        if df_full is None or len(df_full) < (train_days + test_days):
-            log(f"⚠️ {sym}: 데이터 부족으로 제외")
-            continue
+        if df_full is None or len(df_full) < (train_days + test_days): continue
 
-        # 날짜 범위 계산
         end_date = df_full.index[-1]
         test_start = end_date - timedelta(days=test_days)
         train_end = test_start - timedelta(seconds=1)
@@ -721,7 +877,6 @@ def run_real_portfolio_backtest(initial_cash=10000.0, train_days=365, test_days=
         
         if train_start < df_full.index[0]: train_start = df_full.index[0]
 
-        # 학습 (Train)
         df_train = df_full.loc[train_start:train_end].copy()
         if len(df_train) < 100: continue
         
@@ -729,42 +884,32 @@ def run_real_portfolio_backtest(initial_cash=10000.0, train_days=365, test_days=
             model, df_train_res = brain.train_model(df_train, sym)
             r_map, _ = brain.identify_regimes(df_train_res)
             
-            # Map 변환 (bull/bear 인덱스 저장)
-            # brain.identify_regimes 리턴값: {0: 'Bull...', 1: 'Bear...'} 형태
-            # 우리가 필요한 건 {'bull': 0, 'bear': 1} 형태
             bull_idx = [k for k, v in r_map.items() if 'Bull' in v][0]
             bear_idx = [k for k, v in r_map.items() if 'Bear' in v][0]
             regime_map_all[sym] = {'bull': bull_idx, 'bear': bear_idx}
 
-            # 검증 데이터 준비 (Test)
             df_test = df_full.loc[test_start:end_date].copy()
             if len(df_test) < 10: continue
             
-            # Regime 예측 적용
             test_features = df_test[['Log_Returns_Scaled', 'Range_Vol_Scaled', 'RSI_14_Scaled', 'OBV_Scaled']].values
             df_test['Regime'] = model.predict(test_features)
             
-            # Cerebro에 추가
             data_feed = HMMData(dataname=df_test, name=sym)
             cerebro.adddata(data_feed)
+            valid_data_count += 1
             
-            # 로그용
-            log(f"✅ {sym} 준비 완료 (Bull:{bull_idx}, Bear:{bear_idx})")
-
         except Exception as e:
             log(f"⚠️ {sym} 처리 중 오류: {e}")
             continue
 
-    if len(cerebro.datas) == 0:
+    if valid_data_count == 0:
         return {"error": "No valid data found"}
 
-    # 4. 출력 디렉토리 생성
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
     real_dir_name = f"RealPF_{ts}"
     real_dir_path = os.path.join(DATA_DIR, 'backtests', real_dir_name)
     os.makedirs(real_dir_path, exist_ok=True)
 
-    # 5. 전략 추가 및 실행
     cerebro.addstrategy(RealPortfolioStrategy, 
                         regime_map=regime_map_all,
                         config=cfg,
@@ -775,38 +920,51 @@ def run_real_portfolio_backtest(initial_cash=10000.0, train_days=365, test_days=
     strat = results[0]
     
     final_value = cerebro.broker.getvalue()
-    roi = (final_value - initial_cash) / initial_cash * 100
     
-    # 6. 결과 정리 및 압축
+    # [FIX] 안전한 ROI 계산 (Initial Cash 0 방지)
+    roi = 0.0
+    if initial_cash > 0:
+        roi = (final_value - initial_cash) / initial_cash * 100
+    
     zip_path = ""
+    trade_count = 0
+    equity_curve = []
+    
     try:
-        # 이미 Strategy.stop()에서 CSV들은 저장됨
-        # 폴더 압축
+        trade_count = len(strat.trade_records)
+        
+        if strat.daily_stats:
+            df_equity = pd.DataFrame(strat.daily_stats)[['Date', 'Total_Equity']]
+            df_equity.rename(columns={'Date': 'time', 'Total_Equity': 'value'}, inplace=True)
+            df_equity.to_csv(os.path.join(real_dir_path, 'Portfolio_Curve.csv'), index=False)
+            equity_curve = df_equity.to_dict(orient='records')
+
         zip_base_name = os.path.join(DATA_DIR, 'backtests', real_dir_name)
         zip_path_created = shutil.make_archive(zip_base_name, 'zip', root_dir=os.path.join(DATA_DIR, 'backtests'), base_dir=real_dir_name)
         
         shutil.rmtree(real_dir_path)
         zip_path = zip_path_created
     except Exception as e:
-        log(f"⚠️ 압축 중 오류: {e}")
+        log(f"⚠️ 결과 저장 중 오류: {e}")
 
-    # MDD 계산 (종합)
     mdd = 0.0
-    if strat.portfolio_history:
-        df = pd.DataFrame(strat.portfolio_history)
-        peak = df['Total_Equity'].cummax()
-        dd = (df['Total_Equity'] - peak) / peak * 100
+    if equity_curve:
+        df = pd.DataFrame(equity_curve)
+        peak = df['value'].cummax()
+        # [FIX] Peak가 0일 경우 방지
+        peak = peak.replace(0, 1) 
+        dd = (df['value'] - peak) / peak * 100
         mdd = abs(dd.min())
 
     log(f"🏁 Real Portfolio 완료. ROI: {roi:+.2f}%, MDD: {mdd:.2f}%")
 
     return {
-        "type": "batch", # 프론트엔드 호환성을 위해 batch 타입 유지
+        "type": "real_pf",
         "portfolio_roi": round(roi, 2),
-        "avg_mdd": round(mdd, 2), # 종합 MDD
-        "avg_roi": round(roi, 2), # 개별 ROI 평균 의미 없으므로 종합으로 대체
-        "details": [], # 개별 상세는 파일로만 제공
-        "trade_count": len(strat.trade_log),
+        "avg_mdd": round(mdd, 2),
+        "avg_roi": round(roi, 2),
+        "trade_count": trade_count,
         "final_balance": round(final_value, 2),
-        "csv_path": zip_path
+        "csv_path": zip_path,
+        "equity_curve": equity_curve
     }

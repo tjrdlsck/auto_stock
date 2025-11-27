@@ -12,8 +12,6 @@ from dotenv import load_dotenv
 
 from config import CONFIG, DATA_DIR
 import backtest_runner
-from data_layer.data_handler import MultiSymbolLoader
-from alpha_layer.brain import Brain
 
 load_dotenv()
 
@@ -83,33 +81,6 @@ async def heartbeat_loop():
         await loop.run_in_executor(None, requests.get, HEARTBEAT_URL)
     except: pass
 
-@tasks.loop(hours=24)
-async def auto_retraining_loop():
-    if not bot.trader: return
-    await bot.hub.log("🔄 [시스템] AI 모델 재학습 시작", level="SYSTEM")
-    try:
-        loop = asyncio.get_running_loop()
-        
-        loader = MultiSymbolLoader()
-        # 데이터 수집은 동기 함수(API 요청 많음) -> Executor 실행 권장
-        await loop.run_in_executor(None, loader.run_pipeline)
-        
-        brain = Brain()
-        # 모델 학습은 CPU 부하 높음 -> Executor 실행 권장
-        await loop.run_in_executor(None, brain.run_training)
-        
-        # 학습 완료 후 Trader의 모델 리로드
-        await bot.trader.load_models()
-        
-        await bot.hub.log("✅ [시스템] AI 모델 재학습 및 리로드 완료", level="SYSTEM")
-    except Exception as e:
-        await bot.hub.log(f"⚠️ [오류] 재학습 실패: {e}", level="ERROR")
-
-@auto_retraining_loop.before_loop
-async def before_retraining():
-    if DISCORD_ENABLED:
-        await bot.wait_until_ready()
-
 # ---------------------------------------------------------
 # [Events & Commands]
 # ---------------------------------------------------------
@@ -121,9 +92,6 @@ async def on_ready():
     if bot.hub:
         await bot.hub.log("✅ [SYSTEM] 디스코드 봇이 연결되었습니다.", level="INFO", send_to_discord=False)
 
-    # 매매 루프 시작 코드(hourly_trade_loop.start)는 여기서 제거됨 (main.py로 이관)
-
-    if not auto_retraining_loop.is_running(): auto_retraining_loop.start()
     if not heartbeat_loop.is_running(): heartbeat_loop.start()
     
     # 펀딩비 동기화 루프 실행 (비동기 태스크로 등록)

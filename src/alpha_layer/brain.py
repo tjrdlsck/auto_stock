@@ -1,5 +1,6 @@
 import sys
 import os
+import json
 
 # 프로젝트 루트 경로 추가 (모듈 임포트를 위해)
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -101,26 +102,52 @@ class Brain:
             try:
                 model, df_result = self.train_model(df, symbol)
                 
-                # 3. 국면 정의
+                 # 3. 국면 정의
                 regime_map, stats = self.identify_regimes(df_result)
                 
+                # ------------------------------------------------------------------
+                # [수정] 메타데이터 생성 (JSON 저장용 딕셔너리 변환)
+                # ------------------------------------------------------------------
+                save_map = {}
+                for reg_id, name in regime_map.items():
+                    # numpy int64 타입을 Python int로 변환해야 JSON 저장이 가능함
+                    state_id = int(reg_id)
+                    
+                    if 'Bull' in name:
+                        save_map['bull'] = state_id
+                    elif 'Bear' in name:
+                        save_map['bear'] = state_id
+                    else:
+                        save_map['sideways'] = state_id
+
                 # 결과 출력
                 print(f"📊 [{symbol} 국면 정의 결과]")
                 for idx, name in regime_map.items():
                     avg_ret = stats[idx] * 100
                     print(f"  👉 Regime {idx} ({name}): 평균 수익률 {avg_ret:.4f}%")
                 
-                # 4. 모델 저장 (Atomic Write)
+                # ------------------------------------------------------------------
+                # [수정] 모델 및 메타데이터 저장 (Atomic Write)
+                # ------------------------------------------------------------------
+                # 경로 설정
                 model_path = os.path.join(MODELS_DIR, f"hmm_{clean_symbol}.pkl")
+                meta_path = os.path.join(MODELS_DIR, f"hmm_{clean_symbol}_meta.json") # [NEW] 메타 파일 경로
+                
+                # 1) 모델 저장 (.pkl)
                 temp_path = model_path + ".tmp"
                 joblib.dump(model, temp_path)
                 shutil.move(temp_path, model_path) 
+                
+                # 2) 메타데이터 저장 (.json) [NEW]
+                with open(meta_path, 'w', encoding='utf-8') as f:
+                    json.dump(save_map, f, indent=4)
 
                 print(f"💾 모델 안전 저장 완료: {model_path}")
+                print(f"📝 메타데이터 저장 완료: {meta_path}")
                 
                 # 5. 데이터 업데이트 (Regime 컬럼 추가된 CSV 저장)
                 df_result.to_csv(file_path)
-                print(f"💾 모델 및 데이터 저장 완료.\n")
+                print(f"💾 데이터 파일 업데이트 완료.\n")
                 
             except Exception as e:
                 print(f"❌ 학습 실패 ({symbol}): {e}\n")
