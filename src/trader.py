@@ -85,9 +85,45 @@ class BinanceTrader:
         self.mode = 'OFF'
         self.state = {}
 
+    # -----------------------------------------------------------
+    # [Helper] Precision & Formatting
+    # -----------------------------------------------------------
+    def _format_price(self, price):
+        """가격에 따라 소수점 자릿수를 동적으로 조절하여 문자열 반환"""
+        if price is None: return "0"
+        if price < 1.0: 
+            # 1 미만인 경우 (예: XRP, DOGE, PEPE) 소수점 8자리까지 표시하되 불필요한 0 제거
+            return f"{price:.8f}".rstrip('0').rstrip('.')
+        # 1 이상인 경우 소수점 2~4자리 (기존 유지)
+        return f"{price:.4f}"
+
+    def _to_amount_precision(self, symbol, amount):
+        """수량을 거래소 규격에 맞게 절삭 (문자열 -> float 변환)"""
+        try:
+            # ccxt의 amount_to_precision은 문자열을 반환함
+            precise_str = self.exchange.amount_to_precision(symbol, amount)
+            return float(precise_str)
+        except Exception:
+            return amount
+
+    def _to_price_precision(self, symbol, price):
+        """가격을 거래소 규격에 맞게 절삭 (문자열 -> float 변환)"""
+        try:
+            precise_str = self.exchange.price_to_precision(symbol, price)
+            return float(precise_str)
+        except Exception:
+            return price
+
     async def initialize(self):
-        """비동기 초기화: DB 생성 및 상태 로드"""
+        """비동기 초기화: DB 생성, 마켓 정보 로드 및 상태 복구"""
         if self.is_initialized: return
+        
+        # [Phase 2] 정밀도 정보를 위해 마켓 데이터 로드 필수
+        try:
+            await self.exchange.load_markets()
+        except Exception as e:
+            print(f"⚠️ [Init] 마켓 정보 로드 실패 (네트워크 확인 필요): {e}")
+
         await self._init_db()
         self.mode = await self._get_mode_from_db()
         self.state = await self._load_positions_from_db()
@@ -552,12 +588,20 @@ class BinanceTrader:
             except Exception as e:
                 await self.notification.log(f"🚨 [실매매 실패] {symbol} {side}: {e}", level="ERROR")
                 return None, None
+            
     async def execute_smart_order(self, symbol, side, amount, reduce_only=False):
         """
-        [Phase 4 수정] Smart Execution (WAP 계산 + Dust 방지 + ID 리스트 반환)
+        [Phase 4 수정 + Phase 2 정밀도 보정] 
+        Smart Execution (WAP 계산 + Precision Fix + Dust 방지)
         Returns: (weighted_avg_price, [order_ids], exec_type)
         """
-        # 모의투자: 즉시 처리 (단일 ID 리스트 반환으로 통일)
+        # [Phase 2] 수량 정밀도 보정 (API 에러 방지)
+        amount = self._to_amount_precision(symbol, amount)
+        if amount <= 0:
+            print(f"⚠️ [Order] 수량이 너무 작아 주문 불가: {amount}")
+            return None, [], None
+
+        # 모의투자: 즉시 처리
         if self.mode == 'PAPER':
             slippage = self.get_conf('SLIPPAGE_PCT', 0.0002)
             ticker = await self.exchange.fetch_ticker(symbol)
@@ -574,10 +618,9 @@ class BinanceTrader:
         timeout = self.get_conf('LIMIT_ORDER_TIMEOUT_SEC', 10)
         force_market = self.get_conf('FORCE_MARKET_ORDER_ON_TIMEOUT', True)
         
-        # 체결 데이터 추적용 변수
         executed_ids = []
         total_filled_qty = 0.0
-        total_filled_val = 0.0 # qty * price
+        total_filled_val = 0.0 
         
         # 1. MARKET 우선 설정 시
         if priority == 'MARKET':
@@ -595,12 +638,20 @@ class BinanceTrader:
         for i in range(attempts):
             try:
                 ticker = await self.exchange.fetch_ticker(symbol)
-                target_price = ticker['bid'] if side == 'buy' else ticker['ask']
+                # 호가창 상황에 따라 가격 결정
+                raw_target = ticker['bid'] if side == 'buy' else ticker['ask']
                 
+                # [Phase 2] 가격 정밀도 보정
+                target_price = self._to_price_precision(symbol, raw_target)
+                
+                # 남은 수량도 정밀도 재확인 (부분 체결 시 오차 방지)
+                current_qty = self._to_amount_precision(symbol, remaining_amount)
+                if current_qty <= 0: break
+
                 params = {'reduceOnly': True} if reduce_only else {}
                 
-                print(f"Try Limit {i+1}/{attempts}: {symbol} {side} {remaining_amount} @ {target_price}")
-                order = await self.exchange.create_limit_order(symbol, side, remaining_amount, target_price, params)
+                print(f"Try Limit {i+1}/{attempts}: {symbol} {side} {current_qty} @ {target_price}")
+                order = await self.exchange.create_limit_order(symbol, side, current_qty, target_price, params)
                 current_order_id = order['id']
                 
                 # 대기
@@ -611,20 +662,17 @@ class BinanceTrader:
                 filled = float(order_status['filled'])
                 avg_price = float(order_status['average']) if order_status['average'] else target_price
                 
-                # 체결된 수량이 있다면 기록
                 if filled > 0:
                     executed_ids.append(current_order_id)
                     total_filled_qty += filled
                     total_filled_val += (filled * avg_price)
                     remaining_amount -= filled
                 
-                # 완전 체결 시 종료
                 if remaining_amount <= 0:
                     final_wap = total_filled_val / total_filled_qty
                     return final_wap, executed_ids, 'LIMIT'
                 
-                # 미체결 잔량 존재 -> 주문 취소하고 다음 시도
-                # (이미 체결된 부분은 위에서 기록했으므로 취소해도 안전)
+                # 미체결 잔량 존재 -> 주문 취소
                 if order_status['status'] == 'open':
                     await self.exchange.cancel_order(current_order_id, symbol)
 
@@ -632,24 +680,26 @@ class BinanceTrader:
                 print(f"⚠️ Limit Attempt {i+1} Error: {e}")
                 await asyncio.sleep(1)
 
-        # 3. Fallback: 시장가 전환 (Dust Check 추가)
+        # 3. Fallback: 시장가 전환
         if force_market and remaining_amount > 0:
             try:
-                # [Phase 4] 최소 주문 금액 체크 (약 5.5 USDT 안전마진)
+                # 잔량 정밀도 보정
+                final_qty = self._to_amount_precision(symbol, remaining_amount)
+                
+                # 최소 주문 금액 체크
                 ticker = await self.exchange.fetch_ticker(symbol)
-                est_value = remaining_amount * ticker['last']
+                est_value = final_qty * ticker['last']
                 
                 if est_value < 5.5:
                     print(f"⚠️ 남은 잔량 가치(${est_value:.2f})가 최소 주문 금액 미달로 시장가 전환 포기.")
-                    # 지금까지 체결된 것만이라도 반환
                     if total_filled_qty > 0:
                         final_wap = total_filled_val / total_filled_qty
                         return final_wap, executed_ids, 'MIXED'
                     return None, [], None
 
-                print(f"🚀 {symbol} 지정가 실패 -> 남은 {remaining_amount} 시장가 전환")
+                print(f"🚀 {symbol} 지정가 실패 -> 남은 {final_qty} 시장가 전환")
                 params = {'reduceOnly': True} if reduce_only else {}
-                order = await self.exchange.create_market_order(symbol, side, remaining_amount, params)
+                order = await self.exchange.create_market_order(symbol, side, final_qty, params)
                 
                 executed_ids.append(order['id'])
                 market_filled = float(order['filled'])
@@ -659,18 +709,15 @@ class BinanceTrader:
                 total_filled_val += (market_filled * market_price)
                 
                 final_wap = total_filled_val / total_filled_qty
-                return final_wap, executed_ids, 'MIXED' # Limit+Market 섞임
+                return final_wap, executed_ids, 'MIXED'
                 
             except Exception as e:
                 print(f"❌ Market Fallback Fail: {e}")
-                
-                # 실패했더라도 기존에 일부 지정가 체결된 게 있다면 반환
                 if total_filled_qty > 0:
                      final_wap = total_filled_val / total_filled_qty
                      return final_wap, executed_ids, 'LIMIT'
                 return None, [], None
         
-        # 시장가 전환 옵션이 꺼져있거나 실패했을 때, 체결된 게 있으면 반환
         if total_filled_qty > 0:
             final_wap = total_filled_val / total_filled_qty
             return final_wap, executed_ids, 'LIMIT'
@@ -747,40 +794,128 @@ class BinanceTrader:
             print(f"⚠️ Data Fetch Error ({symbol}, TF={self.get_conf('TIMEFRAME', '1h')}): {e}")
             return None
 
+    async def check_safety_conditions(self, symbol, current_price):
+        """
+        [Phase 2 신규] 웹소켓 실시간 가격을 받아 손절 조건을 점검하는 경량 메서드
+        API 조회 없이 메모리(self.state) 데이터만 사용하여 즉각 반응함.
+        """
+        # 동시성 제어: 정각 매매 로직이 돌고 있을 때는 대기
+        async with self.trade_lock:
+            if symbol not in self.state: return
+
+            pos_data = self.state[symbol]
+            side = pos_data['side']
+            stop_loss = pos_data.get('stop_loss_price', 0)
+            
+            # 스탑로스가 설정되지 않았으면 스킵
+            if stop_loss == 0: return
+
+            should_close = False
+            
+            # [조건 체크] Long: 가격이 스탑보다 낮으면 / Short: 가격이 스탑보다 높으면
+            if side == 'buy' and current_price <= stop_loss:
+                should_close = True
+            elif side == 'sell' and current_price >= stop_loss:
+                should_close = True
+
+            if should_close:
+                amount = pos_data['amount']
+                print(f"🚨 [Watchdog] {symbol} 손절 조건 감지! (Curr: {current_price} vs Stop: {stop_loss})")
+                
+                # 청산 주문 즉시 실행 (Reduce Only)
+                close_side = 'sell' if side == 'buy' else 'buy'
+                
+                # execute_smart_order는 내부적으로 API를 호출하여 청산함
+                exec_price, order_ids, exec_type = await self.execute_smart_order(symbol, close_side, amount, reduce_only=True)
+                
+                if exec_price:
+                    # 수수료 및 PnL 처리
+                    entry_price = pos_data['entry_price']
+                    entry_regime = pos_data.get('entry_regime', 'Unknown')
+                    entry_time = pos_data.get('entry_time')
+                    
+                    real_fee = await self._fetch_real_commission(symbol, order_ids)
+                    
+                    duration_min = 0
+                    if entry_time:
+                        try:
+                            et = datetime.strptime(entry_time, '%Y-%m-%d %H:%M:%S')
+                            duration_min = int((datetime.now() - et).total_seconds() / 60)
+                        except: pass
+
+                    pnl, _ = await self._save_trade_history(
+                        symbol, side, entry_price, exec_price, amount, 
+                        real_fee=real_fee, 
+                        strategy="Watchdog_Stop", # 전략명 구분
+                        entry_regime=entry_regime,
+                        exit_reason="StopLoss(RealTime)",
+                        duration=duration_min
+                    )
+                    
+                    # 메모리 및 DB에서 포지션 삭제
+                    await self._delete_position_from_db(symbol)
+                    
+                    # 쿨다운 적용
+                    self.cooldowns[symbol] = self.COOLDOWN_BARS
+                    
+                    msg = f"📉 [Watchdog] {symbol} 실시간 손절 완료. PnL: ${pnl:.2f} @ {exec_price}"
+                    await self.notification.log(msg, level="WARN")
+
     # -----------------------------------------------------------
     # [Main Logic Loop]
     # -----------------------------------------------------------
     async def run_logic(self):
-        """[Phase 4 수정] 메인 매매 로직 (WAP 및 ID 리스트 처리 반영)"""
+        """
+        [Phase 2 수정] 정각마다 실행되는 메인 AI 매매 로직
+        - 데이터 부족 코인 필터링
+        - 백테스팅과 동일한 지표 로직 사용
+        """
         if not self.is_initialized: await self.initialize()
 
+        # Lock을 사용하여 웹소켓 리스너와 충돌 방지
         async with self.trade_lock:
             if self.mode == 'OFF': return "⏸️ 봇 정지 상태"
             
+            # 쿨다운 관리
             for s in list(self.cooldowns.keys()):
                 self.cooldowns[s] -= 1
                 if self.cooldowns[s] <= 0: del self.cooldowns[s]
 
-            free_equity, total_equity = await self.get_balance()
+            _, total_equity = await self.get_balance()
             current_pos_count = len(self.state)
             target_symbols = self.get_conf('SYMBOLS', [])
             
+            logs = []
+            
             for symbol in target_symbols:
+                clean_symbol = symbol.replace('/', '')
+                
+                # 1. 모델 보유 여부 체크 (데이터 부족으로 학습 안 된 경우 스킵)
+                # Brain에서 학습 시 MIN_TRAIN_DAYS를 충족하지 못하면 모델 파일을 생성하지 않음
+                if clean_symbol not in self.models:
+                    # 너무 자주 로그가 찍히지 않게 하려면 주석 처리 가능
+                    # print(f"⚠️ [{symbol}] 모델 없음 (데이터 부족 추정). 매매 스킵.")
+                    continue
+
+                # 2. 데이터 가져오기 (features.py 적용됨)
                 df = await self.fetch_data_and_features(symbol)
                 if df is None or len(df) < 30: continue
                 
+                # 3. 지표 추출 (백테스트와 동일한 Pandas-TA 방식)
+                # iloc[-1]은 현재 진행 중인 봉이므로, 확정된 전 봉(iloc[-2])을 사용
                 current_price = df['close'].iloc[-1] 
                 prev_close = df['close'].iloc[-2]
                 prev_rsi = df['RSI_14'].iloc[-2]
-                prev_ema = df[f'EMA_{self.EMA_PERIOD}'].iloc[-2]
-                prev_atr = df['ATRr_14'].iloc[-2]
+                prev_ema = df['EMA_20'].iloc[-2] # key 이름은 features.py 확인 (EMA_20)
+                prev_atr = df['ATRr_14'].iloc[-2] # key 이름은 features.py 확인 (ATRr_14)
 
+                # 4. 국면(Regime) 판단
                 regime, r_map = self.get_hmm_regime(df.iloc[:-1], symbol)
                 if regime is None: continue
                 
                 has_position = symbol in self.state
                 
-                # --- 청산 로직 ---
+                # --- [A] 청산 로직 (Exit) ---
                 if has_position:
                     pos_data = self.state[symbol]
                     entry_price = pos_data['entry_price']
@@ -791,21 +926,23 @@ class BinanceTrader:
                     amount = pos_data['amount']
                     entry_regime = pos_data.get('entry_regime', 'unknown')
 
+                    # Config 로드
                     stop_atr = self.get_conf('STOP_LOSS_ATR', 2.0)
                     trail_trigger = prev_atr * self.get_conf('TRAIL_TRIGGER_ATR', 2.0)
                     trail_dist = prev_atr * self.get_conf('TRAIL_DIST_ATR', 2.0)
                     
+                    # 스탑로스 초기화 (없을 경우)
                     if stop_loss == 0:
                         stop_loss = entry_price - (prev_atr * stop_atr) if side == 'buy' else entry_price + (prev_atr * stop_atr)
 
                     should_close = False
                     reason = ""
                     
-                    # 1. 하드 스탑
+                    # (1) 하드 스탑 (여기서는 정각 기준 확인, 급락 시에는 Watchdog이 먼저 처리했음)
                     if side == 'buy' and current_price < stop_loss: should_close = True; reason = "StopLoss"
                     elif side == 'sell' and current_price > stop_loss: should_close = True; reason = "StopLoss"
                     
-                    # 2. 트레일링 스탑
+                    # (2) 트레일링 스탑 업데이트 (DB 저장)
                     if not should_close:
                         updated = False
                         if side == 'buy':
@@ -824,20 +961,19 @@ class BinanceTrader:
                         if updated:
                             await self._upsert_position_to_db(symbol, entry_price, high_price, low_price, side, amount, entry_regime, stop_loss)
 
-                    # 3. 국면 전환
+                    # (3) 국면 전환 청산
                     if not should_close:
+                        # Bull장 진입했는데 Bear로 바뀌면 청산
                         if (entry_regime == 'bull' and regime == r_map['bear']) or \
                            (entry_regime == 'bear' and regime == r_map['bull']):
                              should_close = True; reason = "RegimeChange"
 
+                    # 청산 실행
                     if should_close:
                         close_side = 'sell' if side == 'buy' else 'buy'
-                        
-                        # [Phase 4] 리스트 형태의 order_ids 수신
                         exec_price, order_ids, exec_type = await self.execute_smart_order(symbol, close_side, amount, reduce_only=True)
                         
                         if exec_price:
-                            # [Phase 4] 리스트 전달
                             real_fee = await self._fetch_real_commission(symbol, order_ids)
                             
                             duration_min = 0
@@ -858,12 +994,15 @@ class BinanceTrader:
                             )
                             
                             type_tag = f"[{exec_type}]" if exec_type else ""
-                            await self.notification.log(f"💰 [{symbol}] 익절/손절 ({reason}) {type_tag} PnL: ${pnl:.2f} (Duration: {duration_min}m)", level="INFO")
+                            log_msg = f"💰 [{symbol}] 익절/손절 ({reason}) {type_tag} PnL: ${pnl:.2f}"
+                            await self.notification.log(log_msg, level="INFO")
+                            logs.append(log_msg)
+                            
                             await self._delete_position_from_db(symbol)
                             self.cooldowns[symbol] = self.COOLDOWN_BARS
                         continue
 
-                # --- 진입 로직 ---
+                # --- [B] 진입 로직 (Entry) ---
                 else:
                     if current_pos_count >= self.get_conf('MAX_OPEN_POSITIONS', 3): continue
                     if symbol in self.cooldowns: continue
@@ -876,6 +1015,9 @@ class BinanceTrader:
                     signal = None
                     target_regime = None
 
+                    # regime_map: {'bull': 2, 'bear': 0, ...}
+                    # regime: 현재 상태 (0, 1, 2)
+                    
                     if regime == r_map['bull']:
                         if prev_close > prev_ema and rsi_buy_low < prev_rsi < rsi_buy_high:
                             signal = 'buy'; target_regime = 'bull'
@@ -891,9 +1033,11 @@ class BinanceTrader:
                         balance = total_equity
                         max_pos = self.get_conf('MAX_OPEN_POSITIONS', 3)
                         allocation = (balance / max_pos) * 0.95
-                        qty = (allocation * leverage) / current_price
                         
-                        # [Phase 4] 리스트 형태의 order_ids 수신
+                        raw_qty = (allocation * leverage) / current_price
+                        # [Phase 2] 진입 수량 정밀도 보정 (execute_smart_order 내부에서도 하지만, 여기서도 명시적으로)
+                        qty = self._to_amount_precision(symbol, raw_qty)
+                        
                         exec_price, order_ids, exec_type = await self.execute_smart_order(symbol, signal, qty)
                         
                         if exec_price:
@@ -910,11 +1054,16 @@ class BinanceTrader:
                             )
                             
                             type_tag = f"[{exec_type}]" if exec_type else ""
-                            await self.notification.log(f"🚀 [{symbol}] {signal.upper()} {type_tag} 진입 @ {exec_price}", level="INFO")
+                            log_msg = f"🚀 [{symbol}] {signal.upper()} {type_tag} 진입 @ {exec_price}"
+                            await self.notification.log(log_msg, level="INFO")
+                            logs.append(log_msg)
                             
                             current_pos_count += 1
 
-            return "✅ 매매 로직 실행 완료"
+            if not logs:
+                return "✅ 매매 로직 실행 완료 (특이사항 없음)"
+            else:
+                return "\n".join(logs)
 
     # -----------------------------------------------------------
     # [Utils] Sync Funding Loop & Backtest Ops

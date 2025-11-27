@@ -36,6 +36,10 @@ class BacktestParams(BaseModel):
     test_days: int = 30
     update_data: bool = False
     is_batch: bool = False
+    
+    # [Phase 5] 날짜 파라미터 기본 모델에 추가 (누락 방지)
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
 
 class CustomBacktestParams(BacktestParams):
     custom_settings: Dict[str, Any] = {}
@@ -162,6 +166,7 @@ async def run_backtest(params: BacktestParams):
     return await run_custom_backtest(CustomBacktestParams(**params.dict(), custom_settings={}))
 
 # 커스텀 백테스트 실행 및 저장
+# [수정] 커스텀 백테스트 실행 엔드포인트 교체
 @app.post("/api/backtest/run_custom")
 async def run_custom_backtest(params: CustomBacktestParams):
     if backtest_runner is None:
@@ -177,8 +182,12 @@ async def run_custom_backtest(params: CustomBacktestParams):
         
     current_config['TRAIN_DAYS'] = params.train_days
     current_config['TEST_DAYS'] = params.test_days
+    current_config['INITIAL_CASH'] = params.initial_cash 
     
-    # 로그 콜백
+    # [Phase 8] 이력 저장을 위해 날짜 정보 추가
+    if params.start_date: current_config['START_DATE'] = params.start_date
+    if params.end_date: current_config['END_DATE'] = params.end_date
+    
     def log_callback(msg):
         try:
             loop = asyncio.get_running_loop()
@@ -191,14 +200,17 @@ async def run_custom_backtest(params: CustomBacktestParams):
     loop = asyncio.get_running_loop()
     
     try:
-        # 2. 실행 분기 (CPU Bound -> Executor)
+        # 2. 실행 분기
         if params.is_real_portfolio:
+            # [Phase 3] 날짜 파라미터(start_date, end_date) 연결 추가
             result = await loop.run_in_executor(
                 None,
                 lambda: backtest_runner.run_real_portfolio_backtest(
                     initial_cash=params.initial_cash,
                     train_days=params.train_days,
                     test_days=params.test_days,
+                    start_date=params.start_date,  # [수정] UI에서 받은 날짜 전달
+                    end_date=params.end_date,      # [수정] UI에서 받은 날짜 전달
                     update_data=params.update_data,
                     log_func=log_callback,
                     dynamic_config=current_config
@@ -218,12 +230,15 @@ async def run_custom_backtest(params: CustomBacktestParams):
                 await trader.save_backtest_result(save_data)
 
         elif params.is_batch:
+            # 배치 테스트 (날짜 지정 지원 추가됨)
             result = await loop.run_in_executor(
                 None,
                 lambda: backtest_runner.run_batch_backtest(
                     initial_cash=params.initial_cash,
                     train_days=params.train_days,
                     test_days=params.test_days,
+                    start_date=params.start_date,  # [Phase 4] 날짜 파라미터 전달
+                    end_date=params.end_date,      # [Phase 4] 날짜 파라미터 전달
                     update_data=params.update_data,
                     log_func=log_callback,
                     dynamic_config=current_config
@@ -243,6 +258,8 @@ async def run_custom_backtest(params: CustomBacktestParams):
                 await trader.save_backtest_result(save_data)
 
         else:
+            # 단일 심볼 Walk-Forward
+            # [Phase 3] 날짜 파라미터(start_date, end_date) 연결 추가
             result = await loop.run_in_executor(
                 None,
                 lambda: backtest_runner.run_walk_forward(
@@ -250,6 +267,8 @@ async def run_custom_backtest(params: CustomBacktestParams):
                     initial_cash=params.initial_cash,
                     train_days=params.train_days,
                     test_days=params.test_days,
+                    start_date=params.start_date,  # [수정] UI에서 받은 날짜 전달
+                    end_date=params.end_date,      # [수정] UI에서 받은 날짜 전달
                     update_data=params.update_data,
                     log_func=log_callback,
                     dynamic_config=current_config
@@ -259,12 +278,14 @@ async def run_custom_backtest(params: CustomBacktestParams):
                 await trader.save_backtest_result(result)
             
         if "error" in result:
-            raise HTTPException(status_code=500, detail=result['error'])
+            raise HTTPException(status_code=400, detail=result['error'])
             
         return result
         
+    except HTTPException as he:
+        raise he
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Internal Execution Error: {str(e)}")
 
 @app.get("/api/backtest/history")
 async def get_backtest_history():

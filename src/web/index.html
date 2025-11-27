@@ -175,7 +175,39 @@
 
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
+        // [Phase 9] 헬퍼 함수 전역 이동 (모든 컴포넌트에서 사용 가능하도록)
+        // JSON Formatting & Sorting Helper
+        const formatParams = (p) => {
+            if (!p) return "설정 정보 없음";
+            let data = p;
+            if (typeof p === 'string') {
+                try { data = JSON.parse(p); } catch (e) { return p; }
+            }
+            if (typeof data !== 'object' || data === null) return String(data);
 
+            // 우선순위 키 목록 (상단 노출)
+            const priorityKeys = ['SYMBOL', 'START_DATE', 'END_DATE', 'TRAIN_DAYS', 'TEST_DAYS', 'INITIAL_CASH'];
+            const ignoredKeys = ['DATA_DIR', 'MODELS_DIR', 'BASE_DIR', 'DB_PATH', 'FETCHER_INTERVAL'];
+
+            // 1. 필터링
+            const entries = Object.entries(data).filter(([key]) => !ignoredKeys.some(k => key.includes(k)));
+
+            // 2. 정렬 (우선순위 키 -> 알파벳 순)
+            entries.sort((a, b) => {
+                const idxA = priorityKeys.indexOf(a[0]);
+                const idxB = priorityKeys.indexOf(b[0]);
+
+                if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+                if (idxA !== -1) return -1;
+                if (idxB !== -1) return 1;
+                return a[0].localeCompare(b[0]);
+            });
+
+            return entries.map(([key, val]) => {
+                const displayVal = Array.isArray(val) ? `[${val.join(', ')}]` : (typeof val === 'object' ? JSON.stringify(val) : val);
+                return `${key}: ${displayVal}`;
+            }).join('\n');
+        };
         // ------------------------------------------------------------------
         // [Component] Dashboard Tab
         // ------------------------------------------------------------------
@@ -637,9 +669,13 @@
                 initial_cash: 10000,
                 train_days: 365,
                 test_days: 30,
+                // [NEW] 날짜 필터 상태 추가
+                start_date: "",
+                end_date: "",
+
                 update_data: false,
                 is_batch: false,
-                is_real_portfolio: false, // [NEW] 상태 추가
+                is_real_portfolio: false,
                 custom_settings: {
                     RSI_BUY_LOWER: 30, RSI_BUY_UPPER: 65, RSI_SELL_LOWER: 35, RSI_SELL_UPPER: 70,
                     STOP_LOSS_ATR: 2.0, TRAIL_TRIGGER_ATR: 2.0, TRAIL_DIST_ATR: 2.0,
@@ -662,25 +698,6 @@
             const chartInstance = useRef(null);
 
             const toggleTooltip = (id) => setActiveTooltipId(prev => (prev === id ? null : id));
-
-            // [Helper] JSON Formatting
-            const formatParams = (p) => {
-                if (!p) return "설정 정보 없음";
-                let data = p;
-                if (typeof p === 'string') {
-                    try { data = JSON.parse(p); } catch (e) { return p; }
-                }
-                if (typeof data !== 'object' || data === null) return String(data);
-
-                const ignoredKeys = ['DATA_DIR', 'MODELS_DIR', 'BASE_DIR', 'DB_PATH', 'FETCHER_INTERVAL'];
-                return Object.entries(data)
-                    .filter(([key]) => !ignoredKeys.some(k => key.includes(k)))
-                    .map(([key, val]) => {
-                        const displayVal = Array.isArray(val) ? `[${val.join(', ')}]` : (typeof val === 'object' ? JSON.stringify(val) : val);
-                        return `${key}: ${displayVal}`;
-                    })
-                    .join('\n');
-            };
 
             useEffect(() => {
                 const init = async () => {
@@ -721,6 +738,21 @@
                 }
             };
 
+            const handleParamBlur = (key) => {
+                const val = Number(params[key]);
+                if (key === 'train_days') {
+                    // 학습 기간이 30일 미만이면 365일로 초기화
+                    if (!val || val < 30) {
+                        setParams(p => ({ ...p, [key]: 365 }));
+                    }
+                } else if (key === 'test_days') {
+                    // 재학습 주기가 0 이하이면 30일로 초기화
+                    if (!val || val <= 0) {
+                        setParams(p => ({ ...p, [key]: 30 }));
+                    }
+                }
+            };
+
             // [Logic] Checkbox Mutual Exclusion
             const handleModeChange = (mode) => {
                 if (mode === 'batch') {
@@ -733,11 +765,20 @@
             // [Action] Run Backtest
             const runExperiment = async () => {
                 if (loading) return;
+
+                // [NEW] 실행 전 유효성 검사 (Validation)
+                if (Number(params.test_days) <= 0) {
+                    alert("재학습 주기(RE-TRAIN STEP)는 최소 1일 이상이어야 합니다.\n(0일 경우 무한 루프가 발생할 수 있습니다.)");
+                    return;
+                }
+                if (Number(params.train_days) < 30) {
+                    alert("학습 기간(ROLLING WINDOW)은 AI 학습을 위해 최소 30일 이상 필요합니다.");
+                    return;
+                }
                 setLoading(true);
                 setResult(null);
                 setGraphList([]);
                 try {
-                    // [안전장치] 전송 전 빈 값은 0으로 치환
                     const sanitizedSettings = {};
                     Object.keys(params.custom_settings).forEach(key => {
                         const val = params.custom_settings[key];
@@ -749,7 +790,12 @@
                         initial_cash: Number(params.initial_cash),
                         train_days: Number(params.train_days),
                         test_days: Number(params.test_days),
-                        custom_settings: sanitizedSettings // 수정된 설정 사용
+
+                        // [NEW] 날짜 파라미터 추가 (빈 값이면 null 처리)
+                        start_date: params.start_date || null,
+                        end_date: params.end_date || null,
+
+                        custom_settings: sanitizedSettings
                     };
 
                     const res = await axios.post('/api/backtest/run_custom', payload);
@@ -888,16 +934,58 @@
                 <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 animate-fade-in pb-24 md:pb-0 md:h-[calc(100vh-200px)] md:min-h-[800px]">
                     {/* [Left] Configuration */}
                     <div className="xl:col-span-4 bg-gray-800 p-5 rounded-xl shadow-lg border border-gray-700 flex flex-col overflow-y-auto custom-scroll">
-                        <h2 className="text-lg font-bold text-white mb-4 flex items-center gap-2"><i className="ph ph-flask text-purple-400"></i> 전략 설정</h2>
+                        <h2 className="text-lg font-bold text-white mb-4 flex items-center gap-2"><i className="ph ph-flask text-purple-400"></i> 전략 설정 (Walk-Forward)</h2>
                         <div className="space-y-4 flex-1">
                             <div><label className="block text-xs font-bold text-gray-500 mb-1">SYMBOL</label><input type="text" className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600" value={params.symbol} onChange={(e) => setParams({ ...params, symbol: e.target.value })} disabled={params.is_batch || params.is_real_portfolio} /></div>
                             <div><label className="block text-xs font-bold text-gray-500 mb-1">INITIAL CASH ($)</label><input type="number" className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600" value={params.initial_cash} onChange={(e) => setParams({ ...params, initial_cash: e.target.value })} /></div>
+
+                            {/* [수정] Walk-Forward 파라미터로 라벨 변경 */}
+                            {/* Walk-Forward 파라미터 설정 (높이 통일 적용) */}
                             <div className="grid grid-cols-2 gap-3">
-                                <div><label className="block text-xs text-gray-500 mb-1">TRAIN DAYS</label><input type="number" className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" value={params.train_days} onChange={(e) => setParams({ ...params, train_days: e.target.value })} /></div>
-                                <div><label className="block text-xs text-gray-500 mb-1">TEST DAYS</label><input type="number" className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" value={params.test_days} onChange={(e) => setParams({ ...params, test_days: e.target.value })} /></div>
+                                <div>
+                                    <label className="block text-[10px] font-bold text-blue-400 mb-1">학습 기간</label>
+                                    <input
+                                        type="number"
+                                        className="w-full h-9 bg-gray-900 text-white px-2 rounded border border-gray-600"
+                                        value={params.train_days}
+                                        onChange={(e) => setParams({ ...params, train_days: e.target.value })}
+                                        onBlur={() => handleParamBlur('train_days')}
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-[10px] font-bold text-green-400 mb-1">재학습 주기</label>
+                                    <input
+                                        type="number"
+                                        className="w-full h-9 bg-gray-900 text-white px-2 rounded border border-gray-600"
+                                        value={params.test_days}
+                                        onChange={(e) => setParams({ ...params, test_days: e.target.value })}
+                                        onBlur={() => handleParamBlur('test_days')}
+                                    />
+                                </div>
                             </div>
 
-                            {/* [수정됨] 모든 InputGroup에 onBlur={handleCustomBlur} 추가 */}
+                            {/* 날짜 필터 UI (높이 통일 적용) */}
+                            <div className="grid grid-cols-2 gap-3 mt-2 pt-2 border-t border-gray-700/50">
+                                <div title="설정 시 해당 날짜부터 테스트를 시작합니다.">
+                                    <label className="block text-[10px] font-bold text-gray-400 mb-1 flex items-center gap-1">
+                                        START DATE <i className="ph-fill ph-info text-gray-600"></i>
+                                    </label>
+                                    <input type="date" className="w-full h-9 bg-gray-900 text-white px-2 rounded border border-gray-600 text-xs" value={params.start_date} onChange={(e) => setParams({ ...params, start_date: e.target.value })} />
+                                </div>
+                                <div title="설정 시 해당 날짜까지만 테스트를 진행합니다.">
+                                    <label className="block text-[10px] font-bold text-gray-400 mb-1 flex items-center gap-1">
+                                        END DATE <i className="ph-fill ph-info text-gray-600"></i>
+                                    </label>
+                                    <input type="date" className="w-full h-9 bg-gray-900 text-white px-2 rounded border border-gray-600 text-xs" value={params.end_date} onChange={(e) => setParams({ ...params, end_date: e.target.value })} />
+                                </div>
+                            </div>
+                            <div className="text-[10px] text-gray-500 bg-gray-900/50 p-2 rounded border border-gray-700/50 mt-2">
+                                <i className="ph-fill ph-info"></i> 날짜 지정 시 해당 구간만 테스트합니다. 미지정 시 가능한 전체 기간을 테스트합니다.
+                            </div>
+                            <div className="text-[10px] text-gray-500 bg-gray-900/50 p-2 rounded border border-gray-700/50">
+                                <i className="ph-fill ph-info"></i> 설정한 <b>주기(Step)</b>마다 AI 모델을 최신 데이터로 재학습하며 검증합니다. (권장: 7~30일)
+                            </div>
+
                             <details className="group bg-gray-900/30 rounded-lg border border-gray-700 open:bg-gray-900/50 transition"><summary className="p-3 cursor-pointer font-bold text-sm text-green-400 flex justify-between items-center">Money Management <i className="ph-bold ph-caret-down group-open:rotate-180 transition"></i></summary>
                                 <div className="p-3 pt-0 grid grid-cols-2 gap-3 border-t border-gray-700/50 mt-2">
                                     <InputGroup label="LEVERAGE" name="LEVERAGE" val={params.custom_settings.LEVERAGE} onChange={handleCustomChange} onBlur={handleCustomBlur} />
@@ -923,7 +1011,6 @@
                             </details>
                         </div>
                         <div className="mt-6 pt-4 border-t border-gray-700 space-y-3">
-                            {/* [NEW] Checkbox Group with Real Portfolio */}
                             <div className="flex flex-wrap gap-4 text-xs text-gray-400 bg-gray-900/50 p-3 rounded border border-gray-700">
                                 <label className="flex items-center gap-2 cursor-pointer hover:text-white"><input type="checkbox" checked={params.update_data} onChange={(e) => setParams({ ...params, update_data: e.target.checked })} /> <span>데이터 갱신</span></label>
                                 <div className="w-full h-px bg-gray-700 my-1"></div>
@@ -1131,9 +1218,28 @@
                         </div>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                             <div className="md:col-span-2"><label className="text-xs text-blue-300 block mb-1">Symbols</label><input type="text" name="SYMBOLS" value={formData.SYMBOLS || ''} onChange={handleChange} className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600 text-sm font-mono" /></div>
+
+                            {/* [추가] 데이터 관리 설정 섹션 */}
+                            <div className="md:col-span-2 mt-2 border-t border-gray-700 pt-4">
+                                <h3 className="text-sm font-bold text-cyan-400 mb-3"><i className="ph-bold ph-database"></i> Data Management (데이터 수집 및 학습)</h3>
+                            </div>
+                            <div>
+                                <label className="text-xs text-gray-500 block mb-1">FETCH DAYS (수집 기간)</label>
+                                <input type="number" name="FETCH_DAYS" value={formData.FETCH_DAYS || 2500} onChange={handleChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" />
+                                <p className="text-[10px] text-gray-500 mt-1">백테스팅을 위해 충분한 데이터(약 7년)를 수집합니다.</p>
+                            </div>
+                            <div>
+                                <label className="text-xs text-gray-500 block mb-1">MIN TRAIN DAYS (최소 학습 데이터)</label>
+                                <input type="number" name="MIN_TRAIN_DAYS" value={formData.MIN_TRAIN_DAYS || 1500} onChange={handleChange} className="w-full bg-gray-900 text-white p-2 rounded border border-gray-600" />
+                                <p className="text-[10px] text-gray-500 mt-1">이 기간보다 데이터가 적은 코인은 학습/매매를 하지 않습니다.</p>
+                            </div>
+
+                            <div className="md:col-span-2 mt-2 border-t border-gray-700 pt-4"></div>
+
                             <div><label className="text-xs text-gray-400 block mb-1">Leverage</label><input type="number" name="LEVERAGE" value={formData.LEVERAGE || 1} onChange={handleChange} className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600" /></div>
                             <div><label className="text-xs text-gray-400 block mb-1">Max Positions</label><input type="number" name="MAX_OPEN_POSITIONS" value={formData.MAX_OPEN_POSITIONS || 3} onChange={handleChange} className="w-full bg-gray-900 text-white p-3 rounded border border-gray-600" /></div>
-                            {/* [Phase 5] 수수료 설정 섹션 추가 */}
+
+                            {/* [Phase 5] 수수료 설정 섹션 유지 */}
                             <div className="md:col-span-2 mt-4 border-t border-gray-700 pt-4">
                                 <h3 className="text-sm font-bold text-yellow-400 mb-3"><i className="ph-bold ph-coins"></i> Fees & Execution (수수료 및 주문)</h3>
                             </div>

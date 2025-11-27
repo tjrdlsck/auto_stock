@@ -23,48 +23,67 @@ class MultiSymbolLoader:
         self.limit = 1000  # 한 번 요청 시 가져올 캔들 최대 개수
 
     def fetch_ohlcv(self, symbol, days):
-        """단일 심볼에 대한 데이터 수집"""
-        # 슬래시(/)가 파일명에 들어가면 안되므로 제거 (BTC/USDT -> BTCUSDT)
+        """
+        단일 심볼에 대한 데이터 수집 (Retry 로직 및 부분 수집 지원)
+        """
         clean_symbol = symbol.replace('/', '')
         file_path = os.path.join(DATA_DIR, f"{clean_symbol}_{CONFIG['TIMEFRAME']}.csv")
         
-        print(f"\n📥 [{symbol}] 데이터 수집 시작 ({days}일 치)...")
+        print(f"\n📥 [{symbol}] 데이터 수집 시작 (목표: {days}일)...")
         
-        since = self.exchange.parse8601((datetime.now() - timedelta(days=days)).isoformat())
+        # 시작 시점 계산
+        start_dt = datetime.now() - timedelta(days=days)
+        since = self.exchange.parse8601(start_dt.isoformat())
+        
         all_candles = []
+        max_retries = 5       # 최대 재시도 횟수
         
         while True:
-            try:
-                candles = self.exchange.fetch_ohlcv(
-                    symbol=symbol, 
-                    timeframe=CONFIG['TIMEFRAME'], 
-                    since=since, 
-                    limit=self.limit
-                )
-                
-                if not candles:
-                    break
-                
-                all_candles.extend(candles)
-                last_time = candles[-1][0]
-                since = last_time + 1
-                
-                # 진행 상황 표시
-                curr_date = datetime.fromtimestamp(last_time/1000)
-                print(f"   Run: {curr_date.strftime('%Y-%m-%d')} 데이터 수신 중...", end='\r')
-                
-                if last_time >= self.exchange.milliseconds():
-                    break
-                
-                # API 호출 제한 방지
-                time.sleep(0.1)
-                
-            except Exception as e:
-                print(f"\n❌ {symbol} 수집 중 에러: {e}")
+            # [Retry Logic] 지수적 백오프 적용
+            retry_delay = 1
+            candles = None
+            
+            for attempt in range(max_retries):
+                try:
+                    candles = self.exchange.fetch_ohlcv(
+                        symbol=symbol, 
+                        timeframe=CONFIG['TIMEFRAME'], 
+                        since=since, 
+                        limit=self.limit
+                    )
+                    break # 성공 시 루프 탈출
+                except (ccxt.RateLimitExceeded, ccxt.NetworkError) as e:
+                    print(f"⚠️ [API Warning] {symbol} 요청 실패 ({e}). {retry_delay}초 후 재시도... ({attempt+1}/{max_retries})")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2 # 대기 시간 2배 증가
+                except Exception as e:
+                    print(f"❌ [Critical Error] {symbol} 수집 중단: {e}")
+                    return pd.DataFrame(), file_path # 빈 데이터 반환
+
+            # 재시도 실패 혹은 데이터 없음
+            if not candles:
                 break
+            
+            all_candles.extend(candles)
+            last_time = candles[-1][0]
+            since = last_time + 1
+            
+            # 진행 상황 표시
+            curr_date = datetime.fromtimestamp(last_time/1000)
+            print(f"   Run: {curr_date.strftime('%Y-%m-%d')} 데이터 수신 중... (누적: {len(all_candles)}개)", end='\r')
+            
+            # 현재 시간까지 도달했으면 종료
+            if last_time >= self.exchange.milliseconds():
+                break
+            
+            # 정상 호출 간 딜레이
+            time.sleep(0.1)
         
-        print(f"\n✅ 수집 완료: 총 {len(all_candles)}개 캔들")
+        print(f"\n✅ [{symbol}] 수집 완료: 총 {len(all_candles)}개 캔들")
         
+        if not all_candles:
+            return pd.DataFrame(), file_path
+
         # DataFrame 변환
         df = pd.DataFrame(all_candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')

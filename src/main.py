@@ -1,6 +1,8 @@
 import asyncio
 import sys
 import os
+import json # [추가]
+import websockets # [추가] 
 from datetime import datetime, timedelta
 
 # 현재 디렉토리를 모듈 검색 경로에 추가 (import 오류 방지)
@@ -75,7 +77,56 @@ async def trading_scheduler(trader, hub):
         
         await asyncio.sleep(sleep_time)
 
+async def websocket_listener(trader, hub):
+    """
+    [Phase 3 신규] 바이낸스 웹소켓 실시간 리스너
+    - 전 종목 시세(!miniTicker@arr)를 구독하여 0.1초 단위 가격 변동 감지
+    - 보유 포지션이 있을 경우 trader.check_safety_conditions 호출
+    """
+    uri = "wss://fstream.binance.com/ws/!miniTicker@arr"
+    
+    while True:
+        try:
+            print("🔌 [WebSocket] 바이낸스 퓨처 실시간 시세 서버 연결 시도...")
+            async with websockets.connect(uri) as websocket:
+                success_msg = "✅ [WebSocket] 연결 성공! 실시간 감시 모드 가동"
+                print(success_msg)
+                await hub.log(success_msg, level="SYSTEM", send_to_discord=False)
+                
+                async for message in websocket:
+                    # 메인 로직이 정지 상태면 데이터 처리 스킵 (부하 감소)
+                    if trader.mode == 'OFF':
+                        continue
 
+                    # 보유 포지션이 없으면 계산할 필요 없음
+                    if not trader.state:
+                        continue
+
+                    data = json.loads(message)
+                    # data format: [{'s': 'BTCUSDT', 'c': '50000.00', ...}, ...]
+                    
+                    for ticker in data:
+                        raw_symbol = ticker['s'] # 예: BTCUSDT
+                        price = float(ticker['c'])
+                        
+                        # trader.state의 키는 'BTC/USDT' 형식이므로 변환 필요
+                        # 매번 모든 키를 순회하는 것은 비효율적일 수 있으나, 
+                        # 포지션 개수가 적으므로(최대 3~5개) 단순 매칭이 가장 안전함
+                        target_symbol = None
+                        for sym in trader.state.keys():
+                            if sym.replace('/', '') == raw_symbol:
+                                target_symbol = sym
+                                break
+                        
+                        if target_symbol:
+                            # Watchdog: 실시간 가격을 Trader에게 전달 (Locking은 내부 처리)
+                            await trader.check_safety_conditions(target_symbol, price)
+                            
+        except Exception as e:
+            err_msg = f"⚠️ [WebSocket] 연결 끊김 ({e}). 5초 후 재접속..."
+            print(err_msg)
+            # 너무 잦은 로그 전송 방지
+            await asyncio.sleep(5)
 
 async def periodic_retraining(trader, hub, interval_hours=24):
     """
@@ -123,7 +174,7 @@ async def periodic_retraining(trader, hub, interval_hours=24):
 
 async def main():
     print("="*50)
-    print("🤖 QUANT BOT HYBRID SYSTEM V2.1 Starting...")
+    print("🤖 QUANT BOT HYBRID SYSTEM V2.2 (Real-time Watchdog)")
     print("="*50)
 
     # 1. 컴포넌트 초기화
@@ -132,33 +183,30 @@ async def main():
     trader = BinanceTrader(config_manager, hub)
 
     # ------------------------------------------------------------------
-    # [NEW] 안전장치: 시작 시 모델 파일 존재 여부 확인 및 자동 생성
+    # 안전장치: 시작 시 모델 파일 존재 여부 확인 및 자동 생성
     # ------------------------------------------------------------------
-    # models 폴더 내에 .pkl 파일이 하나라도 있는지 확인
     existing_models = glob.glob(os.path.join(MODELS_DIR, "*.pkl"))
     
     if not existing_models:
         print("\n⚠️ [Init] 학습된 모델 파일이 없습니다. (첫 실행으로 간주)")
-        print("🚀 [Init] 초기 AI 모델 학습을 시작합니다. (약 1~2분 소요될 수 있음)...")
+        print("🚀 [Init] 초기 AI 모델 학습을 시작합니다...")
         
         loop = asyncio.get_running_loop()
         try:
-            # 데이터 수집부터 학습까지 한 번 수행
             loader = MultiSymbolLoader()
             await loop.run_in_executor(None, loader.run_pipeline)
             
             brain = Brain()
             await loop.run_in_executor(None, brain.run_training)
-            print("✅ [Init] 초기 학습 완료! 모델과 기준표(_meta.json)가 생성되었습니다.\n")
+            print("✅ [Init] 초기 학습 완료!\n")
         except Exception as e:
-            print(f"❌ [Init] 초기 학습 중 치명적 오류 발생: {e}")
-            # 학습 실패 시 봇 종료 (불완전한 상태로 시작하는 것보다 안전)
+            print(f"❌ [Init] 초기 학습 중 오류: {e}")
             return
     else:
-        print(f"✅ [Init] 기존 모델 파일 감지됨 ({len(existing_models)}개). 학습 과정을 건너뜁니다.")
+        print(f"✅ [Init] 기존 모델 파일 감지됨 ({len(existing_models)}개).")
     # ------------------------------------------------------------------
 
-    # Trader 초기화 (이제 모델 파일이 반드시 존재하므로 안전하게 로드됨)
+    # Trader 초기화
     await trader.initialize()
 
     # 의존성 주입
@@ -166,16 +214,23 @@ async def main():
     app.state.hub = hub
     
     try:
-        # 스케줄러들 등록
+        # [수정] 스케줄러 및 리스너 등록
+        # 1. 정각 매매 스케줄러 (Brain)
         scheduler_task = asyncio.create_task(trading_scheduler(trader, hub))
+        
+        # 2. 주기적 재학습 스케줄러
         retrain_task = asyncio.create_task(periodic_retraining(trader, hub))
+        
+        # 3. [NEW] 실시간 웹소켓 리스너 (Reflex)
+        websocket_task = asyncio.create_task(websocket_listener(trader, hub))
 
         # 통합 실행
         await asyncio.gather(
             run_api_server(app, host="0.0.0.0", port=New_Port),
             start_discord_bot(trader, hub),
             scheduler_task,
-            retrain_task
+            retrain_task,
+            websocket_task # 추가됨
         )
     except asyncio.CancelledError:
         print("\n🛑 시스템 종료 요청 감지.")
