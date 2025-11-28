@@ -22,3 +22,6 @@ src/data
 src/models
 result.md
 com.md
+report.md
+src/logs/
+logs/

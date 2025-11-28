@@ -18,6 +18,9 @@ from discord_main import start_discord_bot
 from alpha_layer.brain import Brain
 from data_layer.data_handler import MultiSymbolLoader
 import glob 
+import logging
+from logging.handlers import RotatingFileHandler
+import traceback
 
 New_Port = 58000  # API 서버 포트 설정
 
@@ -170,26 +173,91 @@ async def periodic_retraining(trader, hub, interval_hours=24):
             # 에러 발생 시 10분 대기 후 재시도 방지 (무한 루프 방어)
             await asyncio.sleep(600)
 
-# [수정 위치: main() 함수 전체 교체 또는 내용 수정]
+
+# ---------------------------------------------------------
+# [Phase 2 추가] 전역 로깅 및 태스크 보호 래퍼
+# ---------------------------------------------------------
+def setup_global_logging():
+    """
+    전역 로거 설정: 모든 모듈의 로그를 logs/system.log로 수집
+    """
+    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # 루트 로거 설정
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    
+    # 포맷
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    
+    # 1. 파일 핸들러 (10MB x 5개 백업)
+    file_handler = RotatingFileHandler(
+        os.path.join(log_dir, 'system.log'), 
+        maxBytes=10*1024*1024, 
+        backupCount=5, 
+        encoding='utf-8'
+    )
+    file_handler.setFormatter(formatter)
+    root_logger.addHandler(file_handler)
+    
+    # 2. 콘솔 핸들러 (기존 print 대체 효과)
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    root_logger.addHandler(console_handler)
+    
+    logging.info("📝 [System] 전역 로깅 시스템 가동 시작")
+
+async def safe_task_runner(coro_func, task_name, *args):
+    """
+    [핵심] 비동기 태스크가 죽지 않고 재시작되도록 감싸는 래퍼
+    """
+    logger = logging.getLogger("TaskRunner")
+    while True:
+        try:
+            logger.info(f"🚀 [{task_name}] 프로세스 시작")
+            # 실제 코루틴 실행
+            await coro_func(*args)
+        except asyncio.CancelledError:
+            logger.info(f"🛑 [{task_name}] 종료 신호 수신. 루프 탈출.")
+            break
+        except Exception as e:
+            # 에러 발생 시 로그 파일에 상세 기록
+            logger.error(f"❌ [{task_name}] 비정상 종료! (5초 후 재시작): {e}")
+            logger.error(traceback.format_exc()) # 스택 트레이스 기록 (원인 분석용)
+            
+            # 디스코드 등으로 알림 전송 (옵션)
+            try:
+                # args 중 NotificationHub가 있다면 에러 전송 시도
+                for arg in args:
+                    if hasattr(arg, 'log'):
+                        await arg.log(f"🚨 [{task_name}] CRASHED: {e}", level="ERROR")
+                        break
+            except: pass
+            
+            # 재시작 전 대기
+            await asyncio.sleep(5)
 
 async def main():
-    print("="*50)
-    print("🤖 QUANT BOT HYBRID SYSTEM V2.2 (Real-time Watchdog)")
-    print("="*50)
+    # 1. 전역 로깅 초기화
+    setup_global_logging()
+    
+    logger = logging.getLogger("Main")
+    logger.info("="*50)
+    logger.info("🤖 QUANT BOT HYBRID SYSTEM V2.3 (Stable)")
+    logger.info("="*50)
 
-    # 1. 컴포넌트 초기화
+    # 2. 컴포넌트 초기화
     config_manager = ConfigManager()
     hub = NotificationHub()
     trader = BinanceTrader(config_manager, hub)
 
-    # ------------------------------------------------------------------
-    # 안전장치: 시작 시 모델 파일 존재 여부 확인 및 자동 생성
-    # ------------------------------------------------------------------
+    # 3. 모델 파일 확인 및 초기 학습
     existing_models = glob.glob(os.path.join(MODELS_DIR, "*.pkl"))
     
     if not existing_models:
-        print("\n⚠️ [Init] 학습된 모델 파일이 없습니다. (첫 실행으로 간주)")
-        print("🚀 [Init] 초기 AI 모델 학습을 시작합니다...")
+        logger.warning("[Init] 학습된 모델 파일이 없습니다. (첫 실행으로 간주)")
+        logger.info("[Init] 초기 AI 모델 학습을 시작합니다...")
         
         loop = asyncio.get_running_loop()
         try:
@@ -198,48 +266,62 @@ async def main():
             
             brain = Brain()
             await loop.run_in_executor(None, brain.run_training)
-            print("✅ [Init] 초기 학습 완료!\n")
+            logger.info("✅ [Init] 초기 학습 완료!")
         except Exception as e:
-            print(f"❌ [Init] 초기 학습 중 오류: {e}")
+            logger.error(f"❌ [Init] 초기 학습 중 오류: {e}")
+            logger.error(traceback.format_exc())
             return
     else:
-        print(f"✅ [Init] 기존 모델 파일 감지됨 ({len(existing_models)}개).")
-    # ------------------------------------------------------------------
+        logger.info(f"✅ [Init] 기존 모델 파일 감지됨 ({len(existing_models)}개).")
 
     # Trader 초기화
     await trader.initialize()
 
-    # 의존성 주입
+    # 의존성 주입 (FastAPI용)
     app.state.trader = trader
     app.state.hub = hub
     
     try:
-        # [수정] 스케줄러 및 리스너 등록
-        # 1. 정각 매매 스케줄러 (Brain)
-        scheduler_task = asyncio.create_task(trading_scheduler(trader, hub))
+        # [수정됨] 래퍼 함수(safe_task_runner)를 사용하여 태스크 생성
+        # 이렇게 하면 내부에서 에러가 나도 로그를 남기고 재시작합니다.
         
-        # 2. 주기적 재학습 스케줄러
-        retrain_task = asyncio.create_task(periodic_retraining(trader, hub))
+        scheduler_task = asyncio.create_task(
+            safe_task_runner(trading_scheduler, "Scheduler", trader, hub)
+        )
         
-        # 3. [NEW] 실시간 웹소켓 리스너 (Reflex)
-        websocket_task = asyncio.create_task(websocket_listener(trader, hub))
+        retrain_task = asyncio.create_task(
+            safe_task_runner(periodic_retraining, "Retrainer", trader, hub)
+        )
+        
+        websocket_task = asyncio.create_task(
+            safe_task_runner(websocket_listener, "WebSocket", trader, hub)
+        )
 
-        # 통합 실행
+        # Discord 봇과 API 서버는 각각 내부적으로 루프 처리가 다르므로 별도 실행
+        # (Discord 봇은 start_discord_bot 내부에서 예외처리가 필요하면 그쪽에서 처리)
+        discord_task = asyncio.create_task(start_discord_bot(trader, hub))
+        
+        # API 서버 실행
+        api_server_task = asyncio.create_task(run_api_server(app, host="0.0.0.0", port=New_Port))
+
+        # 모든 태스크 병렬 실행 대기
         await asyncio.gather(
-            run_api_server(app, host="0.0.0.0", port=New_Port),
-            start_discord_bot(trader, hub),
+            api_server_task,
+            discord_task,
             scheduler_task,
             retrain_task,
-            websocket_task # 추가됨
+            websocket_task
         )
+        
     except asyncio.CancelledError:
-        print("\n🛑 시스템 종료 요청 감지.")
+        logger.info("🛑 시스템 종료 요청 감지.")
     except Exception as e:
-        print(f"\n❌ 치명적 오류 발생: {e}")
+        logger.critical(f"❌ 치명적 오류 발생 (Main Loop): {e}")
+        logger.critical(traceback.format_exc())
     finally:
         if 'trader' in locals():
             await trader.close()
-        print("👋 시스템이 종료되었습니다.")
+        logger.info("👋 시스템이 완전히 종료되었습니다.")
 
 if __name__ == "__main__":
     try:

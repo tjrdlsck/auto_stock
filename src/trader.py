@@ -13,6 +13,8 @@ import io
 import sqlite3
 from dotenv import load_dotenv
 from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
+import logging
+from logging.handlers import RotatingFileHandler
 
 # 프로젝트 경로 설정
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -84,6 +86,26 @@ class BinanceTrader:
         self.is_initialized = False
         self.mode = 'OFF'
         self.state = {}
+        # ▼ [추가] 로깅 시스템 초기화 (logs 폴더 자동 생성 및 파일 기록)
+        self.logger = logging.getLogger("Trader")
+        self.logger.setLevel(logging.INFO)
+        
+        # 로그 포맷 설정
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        
+        # 1. 파일 핸들러 (logs/system.log 에 기록, 10MB마다 회전, 최대 5개 보관)
+        log_dir = os.path.join(ROOT_DIR, 'logs')
+        os.makedirs(log_dir, exist_ok=True)
+        file_handler = RotatingFileHandler(os.path.join(log_dir, 'system.log'), maxBytes=10*1024*1024, backupCount=5, encoding='utf-8')
+        file_handler.setFormatter(formatter)
+        self.logger.addHandler(file_handler)
+        
+        # 2. 콘솔 핸들러 (터미널 출력용)
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(formatter)
+        self.logger.addHandler(console_handler)
+        
+        self.logger.info("✅ [System] 로깅 시스템이 초기화되었습니다.")
 
     # -----------------------------------------------------------
     # [Helper] Precision & Formatting
@@ -1117,8 +1139,8 @@ class BinanceTrader:
 
     async def get_backtest_result_data(self, record_id):
         """
-        백테스트 결과 파일(CSV/ZIP)을 읽어 프론트엔드 그래프용 데이터로 변환합니다.
-        다양한 파일 포맷(Daily, Curve, Summary)과 컬럼명(Date, time, Total_Equity, value)을 자동으로 처리합니다.
+        [Phase 1 수정] 백테스트 결과 파일(CSV/ZIP)을 읽어 프론트엔드 그래프용 데이터로 변환합니다.
+        데이터 로드 실패 시 명확한 로그를 남깁니다.
         """
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute("SELECT csv_path, symbol FROM backtest_history WHERE id=?", (record_id,)) as cursor:
@@ -1128,30 +1150,42 @@ class BinanceTrader:
         csv_path, symbol = row
         
         if not csv_path or not os.path.exists(csv_path):
+            self.logger.warning(f"백테스트 파일 없음: {csv_path}")
             return None
 
         try:
             results = []
             
-            # [Helper] 데이터프레임 표준화 함수
+            # [Helper] 데이터프레임 표준화 함수 (내부 함수)
             def process_df(df, label_name="Equity"):
+                # 인덱스가 날짜인 경우 컬럼으로 리셋
+                if isinstance(df.index, pd.DatetimeIndex):
+                    df = df.reset_index()
+                
                 # 1. 시간 컬럼 찾기 및 표준화 (time)
-                if 'time' in df.columns:
-                    pass # 이미 존재
-                elif 'Date' in df.columns:
-                    df.rename(columns={'Date': 'time'}, inplace=True)
-                elif 'timestamp' in df.columns:
-                    df.rename(columns={'timestamp': 'time'}, inplace=True)
-                else:
-                    return None # 시간 컬럼 없음
+                # 대소문자 구분 없이 찾기 위해 컬럼명 소문자 변환 맵 생성
+                col_map = {c.lower(): c for c in df.columns}
+                
+                time_col = None
+                for cand in ['time', 'date', 'timestamp', 'datetime']:
+                    if cand in col_map:
+                        time_col = col_map[cand]
+                        break
+                
+                if not time_col:
+                    self.logger.warning(f"[{label_name}] 시간 컬럼을 찾을 수 없음. Cols: {df.columns}")
+                    return None
 
                 # 2. 값 컬럼 찾기 및 표준화 (value)
                 val_col = None
-                # 우선순위: value -> Total_Equity -> Portfolio_Value -> Equity
-                candidates = ['value', 'Total_Equity', 'Portfolio_Value', 'Equity']
+                # 우선순위: value -> Total_Equity -> Portfolio_Value -> Equity -> Close
+                candidates = ['value', 'total_equity', 'portfolio_value', 'equity', 'close']
+                
                 for cand in candidates:
-                    if cand in df.columns:
-                        val_col = cand
+                    # 대소문자 무시 매칭
+                    found = next((orig for orig in df.columns if orig.lower() == cand), None)
+                    if found:
+                        val_col = found
                         break
                 
                 # 못 찾았다면 마지막 숫자형 컬럼 사용 (휴리스틱)
@@ -1159,20 +1193,23 @@ class BinanceTrader:
                     numeric_cols = df.select_dtypes(include=[np.number]).columns
                     if len(numeric_cols) > 0: val_col = numeric_cols[-1]
                 
-                if not val_col: return None
+                if not val_col: 
+                    self.logger.warning(f"[{label_name}] 값 컬럼을 찾을 수 없음.")
+                    return None
 
                 # 3. 데이터 추출 (JSON 직렬화 가능 형태)
                 data = []
                 for _, row in df.iterrows():
-                    t_val = str(row['time'])
-                    # 시간 포맷 정리 (YYYY-MM-DD)
-                    if ' ' in t_val: t_val = t_val.split(' ')[0]
-                    
                     try:
+                        t_val = str(row[time_col])
+                        # 시간 포맷 정리 (YYYY-MM-DD)
+                        if ' ' in t_val: t_val = t_val.split(' ')[0]
+                        
                         val = float(row[val_col])
                         if not np.isnan(val):
                             data.append({"time": t_val, "value": val})
-                    except: pass
+                    except Exception as inner_e:
+                        continue
                 
                 if not data: return None
                 return {"label": label_name, "data": data}
@@ -1184,28 +1221,21 @@ class BinanceTrader:
                 with zipfile.ZipFile(csv_path, 'r') as z:
                     namelist = z.namelist()
                     
-                    # 1. 메인 그래프 찾기 (Portfolio_Curve.csv 또는 Portfolio_Summary.csv)
-                    # Curve: 리얼 포트폴리오용 (time, value)
-                    # Summary: 배치용 (Date, Total_Equity)
+                    # 메인 그래프 (Summary/Curve)
                     main_file = next((n for n in namelist if n in ['Portfolio_Curve.csv', 'Portfolio_Summary.csv']), None)
-                    
                     if main_file:
                         with z.open(main_file) as f:
                             df = pd.read_csv(f)
                             res = process_df(df, "Total Portfolio")
                             if res: results.append(res)
                     
-                    # 2. 개별 자산 그래프 찾기 (선택 사항)
-                    # 배치 테스트의 경우 개별 코인 데이터(BT_...csv)가 있을 수 있음
-                    # 리얼 포트폴리오의 경우 Daily_Stats는 메인과 중복되므로 스킵하거나 추가 가능
-                    # 여기서는 'Portfolio_'로 시작하지 않고 'Trades' 로그가 아닌 CSV만 추가
+                    # 개별 자산 그래프
                     for filename in namelist:
                         if filename == main_file: continue
                         if not filename.endswith('.csv'): continue
                         if 'Master_Trade_Log' in filename: continue
                         if 'Daily_Portfolio_Stats' in filename: continue
                         
-                        # BT_..._Daily.csv 형태 등
                         if 'BT_' in filename or '_Daily' in filename:
                             # 심볼명 추출 시도
                             label = filename.replace('.csv', '').replace('_Daily', '').split('_')[-1]
@@ -1220,7 +1250,6 @@ class BinanceTrader:
             # Case B: 단일 CSV 파일 처리 (단일 백테스트)
             # -------------------------------------------------------
             else:
-                # 단일 파일은 보통 BT_..._Daily.csv 임
                 df = pd.read_csv(csv_path)
                 res = process_df(df, symbol)
                 if res: results.append(res)
@@ -1228,7 +1257,7 @@ class BinanceTrader:
             return results if results else None
 
         except Exception as e:
-            print(f"❌ Graph Data Load Error: {e}")
+            self.logger.error(f"❌ Graph Data Load Error ({csv_path}): {e}")
             return None
 
     async def save_backtest_result(self, result):
@@ -1345,14 +1374,63 @@ class BinanceTrader:
         return 0.0
 
     async def get_positions(self):
-        if self.mode != 'REAL':
-            return [
-                {'symbol': s, 'side': p['side'], 'amount': p['amount'], 
-                 'entryPrice': p['entry_price'], 'unrealizedPnl': 0, 
-                 'leverage': self.get_conf('LEVERAGE', 1), 'mode': self.mode}
-                for s, p in self.state.items()
-            ]
-        return []
+        """
+        [Phase 1 수정] 현재가를 조회하여 실시간 PnL 및 ROI(%)를 계산하여 반환
+        """
+        position_list = []
+        
+        # 현재 상태에 있는 모든 심볼 순회
+        for symbol, pos in self.state.items():
+            try:
+                # 1. 현재 가격 조회 (실시간 PnL 계산용)
+                ticker = await self.exchange.fetch_ticker(symbol)
+                current_price = ticker['last']
+                
+                entry_price = pos['entry_price']
+                amount = pos['amount']
+                side = pos['side']
+                leverage = self.get_conf('LEVERAGE', 1.0)
+                
+                # 2. 미실현 손익(Unrealized PnL) 계산
+                if side == 'buy':
+                    unrealized_pnl = (current_price - entry_price) * amount
+                else:
+                    unrealized_pnl = (entry_price - current_price) * amount
+                
+                # 3. 수익률(ROI) 계산
+                # 투입 증거금 = (진입가 * 수량) / 레버리지
+                margin = (entry_price * amount) / leverage
+                roi_percentage = 0.0
+                if margin > 0:
+                    roi_percentage = (unrealized_pnl / margin) * 100
+                
+                position_list.append({
+                    'symbol': symbol,
+                    'side': side,
+                    'amount': amount,
+                    'entryPrice': entry_price,
+                    'currentPrice': current_price,     # [추가] 현재가
+                    'unrealizedPnl': round(unrealized_pnl, 2),
+                    'roi': round(roi_percentage, 2),   # [추가] 수익률
+                    'leverage': leverage,
+                    'mode': self.mode
+                })
+                
+            except Exception as e:
+                # 에러 발생 시에도 기존 정보는 최대한 반환
+                self.logger.error(f"포지션 조회 중 에러 ({symbol}): {e}")
+                position_list.append({
+                    'symbol': symbol,
+                    'side': pos['side'],
+                    'amount': pos['amount'],
+                    'entryPrice': pos['entry_price'],
+                    'unrealizedPnl': 0,
+                    'roi': 0,
+                    'leverage': self.get_conf('LEVERAGE', 1),
+                    'mode': self.mode
+                })
+
+        return position_list
     
     async def safe_force_close(self, symbol):
         symbol = symbol.strip()

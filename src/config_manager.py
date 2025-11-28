@@ -84,44 +84,62 @@ class ConfigManager:
 
     def update_bulk(self, new_settings: dict):
         """
-        [수정됨] 여러 설정을 한 번에 업데이트 (Web UI 폼 저장용)
-        - 입력된 값의 타입을 기존 설정의 타입에 맞춰 변환 시도
-        - 예: "BTC/USDT, ETH/USDT" (String) -> ["BTC/USDT", "ETH/USDT"] (List)
+        [Phase 3 수정] 여러 설정을 한 번에 업데이트 (Web UI 폼 저장용)
+        - 주요 숫자형 필드에 대한 강제 타입 변환 로직 추가
         """
         updated_count = 0
         
+        # [추가] 정수형으로 강제 변환할 키 목록
+        int_fields = [
+            'RETRAIN_INTERVAL_HOURS', 'FETCH_DAYS', 'MIN_TRAIN_DAYS', 
+            'CANDLE_LIMIT', 'LIMIT_ORDER_ATTEMPTS', 'LIMIT_ORDER_TIMEOUT_SEC',
+            'MAX_OPEN_POSITIONS'
+        ]
+        
         for key, value in new_settings.items():
-            # 1. 기존 키가 존재하는 경우, 타입 안전성 확인
+            # 0. 값 정제 (빈 문자열 등 처리)
+            if value == "": 
+                continue
+
+            # 1. 명시적 정수 변환 (새로 추가된 키라도 적용)
+            if key in int_fields:
+                try:
+                    self.config[key] = int(value)
+                    updated_count += 1
+                    continue
+                except ValueError:
+                    print(f"⚠️ [Config] '{key}' 정수 변환 실패: {value}")
+                    continue
+
+            # 2. 기존 키가 존재하는 경우, 기존 타입에 맞춤
             if key in self.config:
                 original_value = self.config[key]
                 original_type = type(original_value)
                 
                 try:
-                    # 리스트 타입인데 입력이 문자열로 온 경우 (CSV 형태)
+                    # 리스트 처리
                     if original_type == list and isinstance(value, str):
-                        # 콤마로 분리하고 공백 제거
                         parsed_list = [item.strip() for item in value.split(',') if item.strip()]
                         self.config[key] = parsed_list
                     
-                    # 불리언 타입인데 입력이 문자열로 온 경우
+                    # 불리언 처리
                     elif original_type == bool and isinstance(value, str):
                         self.config[key] = (value.lower() == 'true')
                     
-                    # 숫자(int/float) 타입 처리
+                    # 숫자 처리 (위에서 처리 안 된 나머지)
                     elif original_type == int:
                         self.config[key] = int(value)
                     elif original_type == float:
                         self.config[key] = float(value)
                         
-                    # 그 외에는 그대로 대입
                     else:
                         self.config[key] = value
                         
                 except Exception as e:
-                    print(f"⚠️ [Config] '{key}' 값 변환 실패 ({value}): {e}. 변경하지 않습니다.")
+                    print(f"⚠️ [Config] '{key}' 값 변환 실패 ({value}): {e}")
                     continue
             
-            # 2. 새로운 키인 경우 그냥 추가
+            # 3. 새로운 키인 경우 (정수 리스트 외에는 그대로 저장)
             else:
                 self.config[key] = value
             

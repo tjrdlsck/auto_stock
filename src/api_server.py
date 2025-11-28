@@ -2,17 +2,96 @@ import os
 import sys
 import asyncio
 import json
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Response
+import uuid # [Phase 12] 추가
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Response, BackgroundTasks # [Phase 12] BackgroundTasks 추가
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import uvicorn
 from datetime import datetime
+from collections import OrderedDict 
+
+# [추가] 전역 락 (순차 실행 보장용)
+# 100개의 요청이 와도 이 락 때문에 한 번에 하나씩만 실행됩니다.
+BACKTEST_LOCK = asyncio.Lock()
 
 # 프로젝트 모듈 임포트
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from config import BASE_DIR, MODELS_DIR, DATA_DIR
+class BacktestTaskManager:
+    def __init__(self, max_history=50):
+        """
+        max_history: 보관할 최대 태스크 개수 (기본 50개)
+        """
+        # 순서 보장을 위해 OrderedDict 사용
+        self.tasks = OrderedDict()
+        self.max_history = max_history
+
+    def create_task(self, params: dict):
+        # 1. 용량 확인 및 정리 (Cleanup)
+        if len(self.tasks) >= self.max_history:
+            to_remove = None
+            # 완료되었거나 에러가 난 태스크 중 가장 오래된 것을 찾음 (FIFO)
+            for tid, task in self.tasks.items():
+                if task['status'] in ['completed', 'error']:
+                    to_remove = tid
+                    break
+            
+            if to_remove:
+                # 공간이 있으면 삭제하고 진행
+                del self.tasks[to_remove]
+            else:
+                # 지울 게 없다면(전부 대기중/실행중) -> 요청 거부 (서버 보호)
+                raise HTTPException(
+                    status_code=503, 
+                    detail="백테스트 대기열이 가득 찼습니다. (모든 슬롯이 대기 중이거나 실행 중입니다)"
+                )
+
+        # 2. 태스크 생성
+        task_id = str(uuid.uuid4())
+        self.tasks[task_id] = {
+            "id": task_id,
+            "status": "queued", # 초기 상태: 대기중
+            "progress": 0,
+            "total_steps": 100,
+            "message": "Waiting in queue...",
+            "result": None,
+            "timestamp": datetime.now().strftime('%H:%M:%S'),
+            "symbol": params.get('symbol', 'Unknown'),
+            "mode": "BATCH" if params.get('is_batch') else ("REAL_PF" if params.get('is_real_portfolio') else "SINGLE")
+        }
+        return task_id
+
+    def update_progress(self, task_id, current, total, msg=""):
+        if task_id in self.tasks:
+            # 상태가 running이 아니면 running으로 변경 (락 획득 시점)
+            if self.tasks[task_id]["status"] == "queued":
+                self.tasks[task_id]["status"] = "running"
+                
+            pct = int((current / total) * 100) if total > 0 else 0
+            self.tasks[task_id]["progress"] = pct
+            self.tasks[task_id]["total_steps"] = total
+            self.tasks[task_id]["message"] = msg
+
+    def complete_task(self, task_id, result):
+        if task_id in self.tasks:
+            self.tasks[task_id]["status"] = "completed"
+            self.tasks[task_id]["progress"] = 100
+            self.tasks[task_id]["message"] = "Done"
+            self.tasks[task_id]["result"] = result
+
+    def fail_task(self, task_id, error_msg):
+        if task_id in self.tasks:
+            self.tasks[task_id]["status"] = "error"
+            self.tasks[task_id]["message"] = str(error_msg)
+
+    def get_active_tasks(self):
+        # 최신순 정렬하여 반환
+        return sorted(list(self.tasks.values()), key=lambda x: x['timestamp'], reverse=True)
+
+# [중요] 전역 인스턴스 생성 부분도 max_history 파라미터 확인
+task_manager = BacktestTaskManager(max_history=50)
 
 # 백테스팅 모듈 임포트
 try:
@@ -165,14 +244,114 @@ async def reset_paper_balance(data: BalanceReset):
 async def run_backtest(params: BacktestParams):
     return await run_custom_backtest(CustomBacktestParams(**params.dict(), custom_settings={}))
 
+# [Phase 12] 백그라운드 작업 실행 함수
+async def process_backtest_task(task_id: str, params: CustomBacktestParams, current_config: dict):
+    trader = get_trader()
+    hub = get_hub()
+    
+    # 진행률 콜백 함수
+    def progress_callback(current, total, msg):
+        task_manager.update_progress(task_id, current, total, msg)
+
+    loop = asyncio.get_running_loop()
+    
+    # [핵심] 락 획득 대기 (순차 처리)
+    # 앞선 작업이 끝날 때까지 여기서 멈춰 대기합니다.
+    async with BACKTEST_LOCK:
+        try:
+            # 락을 얻었으므로 상태를 실행 중으로 변경
+            task_manager.update_progress(task_id, 0, 100, "Processing started...")
+            
+            result = None
+            
+            # 1. 실행 분기
+            if params.is_real_portfolio:
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: backtest_runner.run_real_portfolio_backtest(
+                        initial_cash=params.initial_cash,
+                        train_days=params.train_days,
+                        test_days=params.test_days,
+                        start_date=params.start_date,
+                        end_date=params.end_date,
+                        update_data=params.update_data,
+                        log_func=None,
+                        dynamic_config=current_config,
+                        progress_callback=progress_callback
+                    )
+                )
+                if "error" not in result:
+                    save_data = {
+                        "symbol": "REAL_PF", "params": current_config,
+                        "roi": result.get('portfolio_roi', 0), "mdd": result.get('avg_mdd', 0),
+                        "win_rate": 0, "trade_count": result.get('trade_count', 0),
+                        "final_balance": result.get('final_balance', 0), "csv_path": result.get('csv_path', '')
+                    }
+                    await trader.save_backtest_result(save_data)
+
+            elif params.is_batch:
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: backtest_runner.run_batch_backtest(
+                        initial_cash=params.initial_cash,
+                        train_days=params.train_days,
+                        test_days=params.test_days,
+                        start_date=params.start_date,
+                        end_date=params.end_date,
+                        update_data=params.update_data,
+                        log_func=None,
+                        dynamic_config=current_config,
+                        progress_callback=progress_callback
+                    )
+                )
+                if "error" not in result:
+                    save_data = {
+                        "symbol": "BATCH_SUM", "params": current_config,
+                        "roi": result.get('portfolio_roi', 0), "mdd": result.get('avg_mdd', 0),
+                        "win_rate": 0, "trade_count": 0, "final_balance": 0, "csv_path": result.get('csv_path', '')
+                    }
+                    await trader.save_backtest_result(save_data)
+
+            else:
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: backtest_runner.run_walk_forward(
+                        symbol=params.symbol,
+                        initial_cash=params.initial_cash,
+                        train_days=params.train_days,
+                        test_days=params.test_days,
+                        start_date=params.start_date,
+                        end_date=params.end_date,
+                        update_data=params.update_data,
+                        log_func=None,
+                        dynamic_config=current_config,
+                        progress_callback=progress_callback
+                    )
+                )
+                if "error" not in result:
+                    await trader.save_backtest_result(result)
+
+            # 2. 결과 처리
+            if result and "error" in result:
+                task_manager.fail_task(task_id, result['error'])
+            else:
+                task_manager.complete_task(task_id, result)
+                
+        except Exception as e:
+            print(f"❌ Backtest Task Error: {e}")
+            task_manager.fail_task(task_id, str(e))
+
 # 커스텀 백테스트 실행 및 저장
 # [수정] 커스텀 백테스트 실행 엔드포인트 교체
 @app.post("/api/backtest/run_custom")
-async def run_custom_backtest(params: CustomBacktestParams):
+async def run_custom_backtest(params: CustomBacktestParams, background_tasks: BackgroundTasks):
+    """
+    [Phase 12] 비동기 백테스트 실행 (Non-blocking)
+    작업 ID를 즉시 반환하고, 실제 연산은 백그라운드에서 수행
+    """
     if backtest_runner is None:
         raise HTTPException(status_code=501, detail="Backtest module not found")
         
-    hub = get_hub()
     trader = get_trader()
     
     # 1. 동적 설정 생성
@@ -183,109 +362,25 @@ async def run_custom_backtest(params: CustomBacktestParams):
     current_config['TRAIN_DAYS'] = params.train_days
     current_config['TEST_DAYS'] = params.test_days
     current_config['INITIAL_CASH'] = params.initial_cash 
-    
-    # [Phase 8] 이력 저장을 위해 날짜 정보 추가
     if params.start_date: current_config['START_DATE'] = params.start_date
     if params.end_date: current_config['END_DATE'] = params.end_date
     
-    def log_callback(msg):
-        try:
-            loop = asyncio.get_running_loop()
-            asyncio.run_coroutine_threadsafe(
-                hub.log(msg, level="BACKTEST", send_to_discord=False), loop
-            )
-        except RuntimeError:
-            pass
-
-    loop = asyncio.get_running_loop()
+    # 2. 태스크 생성 및 백그라운드 실행 등록
+    task_id = task_manager.create_task(params.dict())
     
-    try:
-        # 2. 실행 분기
-        if params.is_real_portfolio:
-            # [Phase 3] 날짜 파라미터(start_date, end_date) 연결 추가
-            result = await loop.run_in_executor(
-                None,
-                lambda: backtest_runner.run_real_portfolio_backtest(
-                    initial_cash=params.initial_cash,
-                    train_days=params.train_days,
-                    test_days=params.test_days,
-                    start_date=params.start_date,  # [수정] UI에서 받은 날짜 전달
-                    end_date=params.end_date,      # [수정] UI에서 받은 날짜 전달
-                    update_data=params.update_data,
-                    log_func=log_callback,
-                    dynamic_config=current_config
-                )
-            )
-            if "error" not in result:
-                save_data = {
-                    "symbol": "REAL_PF",
-                    "params": current_config,
-                    "roi": result.get('portfolio_roi', 0),
-                    "mdd": result.get('avg_mdd', 0),
-                    "win_rate": 0, 
-                    "trade_count": result.get('trade_count', 0),
-                    "final_balance": result.get('final_balance', 0),
-                    "csv_path": result.get('csv_path', '')
-                }
-                await trader.save_backtest_result(save_data)
+    background_tasks.add_task(
+        process_backtest_task, 
+        task_id, 
+        params, 
+        current_config
+    )
+    
+    return {"status": "started", "task_id": task_id, "message": "Backtest started in background"}
 
-        elif params.is_batch:
-            # 배치 테스트 (날짜 지정 지원 추가됨)
-            result = await loop.run_in_executor(
-                None,
-                lambda: backtest_runner.run_batch_backtest(
-                    initial_cash=params.initial_cash,
-                    train_days=params.train_days,
-                    test_days=params.test_days,
-                    start_date=params.start_date,  # [Phase 4] 날짜 파라미터 전달
-                    end_date=params.end_date,      # [Phase 4] 날짜 파라미터 전달
-                    update_data=params.update_data,
-                    log_func=log_callback,
-                    dynamic_config=current_config
-                )
-            )
-            if "error" not in result:
-                save_data = {
-                    "symbol": "BATCH_SUM",
-                    "params": current_config,
-                    "roi": result.get('portfolio_roi', 0),
-                    "mdd": result.get('avg_mdd', 0),
-                    "win_rate": 0, 
-                    "trade_count": sum(len(r.get('trades', [])) for r in result.get('details', [])),
-                    "final_balance": 0,
-                    "csv_path": result.get('csv_path', '')
-                }
-                await trader.save_backtest_result(save_data)
-
-        else:
-            # 단일 심볼 Walk-Forward
-            # [Phase 3] 날짜 파라미터(start_date, end_date) 연결 추가
-            result = await loop.run_in_executor(
-                None,
-                lambda: backtest_runner.run_walk_forward(
-                    symbol=params.symbol,
-                    initial_cash=params.initial_cash,
-                    train_days=params.train_days,
-                    test_days=params.test_days,
-                    start_date=params.start_date,  # [수정] UI에서 받은 날짜 전달
-                    end_date=params.end_date,      # [수정] UI에서 받은 날짜 전달
-                    update_data=params.update_data,
-                    log_func=log_callback,
-                    dynamic_config=current_config
-                )
-            )
-            if "error" not in result:
-                await trader.save_backtest_result(result)
-            
-        if "error" in result:
-            raise HTTPException(status_code=400, detail=result['error'])
-            
-        return result
-        
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal Execution Error: {str(e)}")
+@app.get("/api/backtest/tasks")
+async def get_backtest_tasks():
+    """[Phase 12] 현재/최근 백테스트 태스크 목록 및 상태 조회"""
+    return task_manager.get_active_tasks()
 
 @app.get("/api/backtest/history")
 async def get_backtest_history():
