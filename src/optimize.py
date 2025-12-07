@@ -101,8 +101,8 @@ if __name__ == "__main__":
         'sma_period': [50, 100], 
         'k_period': [20],         
         'sl_multiplier': [2.0, 3.0, 4.0],
-        'risk_per_trade': (np.arange(10, 21, 5)/100).tolist(), # 10%~30%
-        'leverage': (np.arange(1, 5, 1)).tolist(),            # 1, 3, 5, 7, 9배
+        'risk_per_trade': (np.arange(5, 21, 5)/100).tolist(), # 10%~30%
+        'leverage': (np.arange(1, 20, 1)).tolist(),            # 1, 3, 5, 7, 9배
         'trailing_mult': (np.arange(20, 51, 5)/10).tolist()    # 2.0 ~ 5.0배
     }
     
