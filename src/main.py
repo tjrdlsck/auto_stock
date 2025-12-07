@@ -11,7 +11,7 @@ from config.settings import Config
 from src.data_loader import DataLoader
 from src.backtester import Backtester
 # 전략 import 경로 주의
-from src.strategies.volatility_breakout import VolatilityBreakoutStrategy
+from src.strategies.volatility_breakout_trailing import VolatilityBreakoutTrailingStrategy
 from src.risk_manager import RiskManager
 
 def run_backtest():
@@ -36,12 +36,12 @@ def run_backtest():
         return
 
     # 3. 전략 및 리스크 매니저 초기화
-    strategy = VolatilityBreakoutStrategy() # Instantiate the concrete strategy
+    strategy = VolatilityBreakoutTrailingStrategy()  # Instantiate the concrete strategy
     risk_manager = RiskManager() # Instantiate the risk manager
 
     # 4. 백테스터 엔진 초기화 및 실행 (전략과 리스크 매니저 주입)
     tester = Backtester(df=df, strategy=strategy, risk_manager=risk_manager) # Modified
-    tester.run()
+    report = tester.run()
 
 # Removed run_live_trader function as per user request
 

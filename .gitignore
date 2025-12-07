@@ -19,6 +19,8 @@ data/decision_log.csv
 data/equity_curve.csv
 data/trade_log.csv
 data/system.log
+data/experiment_log.csv
+data/
 
 test.py
 text.md

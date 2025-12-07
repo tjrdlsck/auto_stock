@@ -61,7 +61,7 @@ class Backtester:
             # 하지만 최적화 결과가 0이면 이 문제가 확실함.
             # 여기서는 Optuna 실행 시 너무 시끄럽지 않게 놔두거나 디버깅용 print 추가
             # print(f"DEBUG: Data length {len(self.full_df)} < Needed {min_data_needed}") 
-            return
+            return None # [수정] 아무것도 반환하지 않음
 
         # 시작 인덱스 설정
         start_index = len(self.full_df) - min_data_needed
@@ -69,7 +69,7 @@ class Backtester:
         
         self.logger.info(f"\n[Backtester] Starting simulation over last {Config.TEST_DAYS} days ({len(self.full_df)-start_index} bars)...")
         self.logger.info(f"Initial Balance: ${self.balance:,.2f}")
-
+        
         # 3. 타임머신 루프 (Tqdm: 진행바 표시, Warning 레벨일 땐 숨김)
         show_progress = False if Config.LOG_LEVEL == "WARNING" else True
         
@@ -91,7 +91,8 @@ class Backtester:
             self._record_equity(current_bar)
 
         # 4. 결과 리포트 생성
-        self._generate_report()
+        report = self._generate_report()
+        return report # [핵심 수정]
 
     def _process_entry(self, df_slice):
         """
@@ -321,7 +322,11 @@ class Backtester:
 
         if not self.trade_log:
             self.logger.info("\n[Backtest Result] No trades executed.")
-            return
+            # [수정] 거래가 없어도 빈 결과를 반환하도록 수정
+            return {
+                "roi_pct": 0, "mdd_pct": 0, "total_trades": 0, 
+                "win_rate_pct": 0, "liquidations": 0
+            }
 
         df_trades = pd.DataFrame(self.trade_log)
         
@@ -341,7 +346,7 @@ class Backtester:
         drawdown = (equity_series - rolling_max) / rolling_max
         mdd = drawdown.min() * 100
         roi = ((self.balance - Config.INITIAL_BALANCE) / Config.INITIAL_BALANCE) * 100
-
+        
         # 결과 출력
         self.logger.info(f"\n{'='*40}")
         self.logger.info(f"📊 BACKTEST FINAL REPORT")
@@ -360,3 +365,12 @@ class Backtester:
         # 파일 저장
         df_trades.to_csv(os.path.join(Config.SAVE_DIR, "trade_log.csv"), index=False)
         equity_series.to_csv(os.path.join(Config.SAVE_DIR, "equity_curve.csv"))
+        
+        # [핵심 수정] 결과를 딕셔너리로 묶어서 반환
+        return {
+            "roi_pct": roi,
+            "mdd_pct": mdd,
+            "total_trades": total_trades,
+            "win_rate_pct": win_rate,
+            "liquidations": liquidated_trades
+        }

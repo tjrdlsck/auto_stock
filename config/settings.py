@@ -32,7 +32,7 @@ class Config:
     TIMEFRAME = "1d"  # [수정] 1h -> 1d (변동성 돌파의 정석)
     
     TOTAL_DAYS_TO_FETCH = 1825  # 1년치 데이터
-    TEST_DAYS = 1095         # 최근 6개월 백테스트
+    TEST_DAYS = 90         # 최근 6개월 백테스트
     
     # 3. Strategy Parameters (VBO + Dynamic K)
     # 변동성 돌파 전략 전용 설정
@@ -42,7 +42,7 @@ class Config:
     
     # 4. Risk Management
     RISK_PER_TRADE = 0.20      # 자산의 2% 리스크
-    LEVERAGE = 4.0            # 레버리지 1배
+    LEVERAGE = 5.0            # 레버리지 1배
     STOP_LOSS_MULTIPLIER = 2.0 # ATR * 2.0 손절
 
     # 백테스트 비용 설정
