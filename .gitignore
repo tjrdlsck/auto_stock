@@ -9,6 +9,7 @@ __pycache__/
 
 # Logs
 *.log
+logs/
 
 # Data & Artifacts
 btc_macro_dataset.csv
@@ -27,3 +28,5 @@ text.md
 
 # OS
 .DS_Store
+
+*.html

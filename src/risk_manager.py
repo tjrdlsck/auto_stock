@@ -9,117 +9,107 @@ from config.settings import Config
 
 class RiskManager:
     """
-    Risk Manager
-    전략의 매매 신호를 바탕으로 안전한 진입 물량(Quantity)을 계산합니다.
+    [Step 5 Modified]
+    Risk Manager with Safety Guard
+    - 'Wide SL' 전략 시 발생할 수 있는 '손절가 < 청산가' 역전 현상을 방지합니다.
+    - 청산가 도달 직전(0.2% 버퍼)에 강제로 손절 나가도록 파라미터를 보정합니다.
     """
     
     def __init__(self, risk_per_trade=None, leverage=None):
-        # 값이 들어오면 그걸 쓰고, 안 들어오면 Config 기본값 사용
         self.risk_per_trade = risk_per_trade if risk_per_trade is not None else Config.RISK_PER_TRADE
         self.leverage = leverage if leverage is not None else Config.LEVERAGE
 
     def calculate_entry_params(self, balance: float, entry_price: float, stop_loss: float, action: str):
         """
-        자금 관리 규칙에 따른 진입 파라미터 계산 (청산가 계산 로직 추가됨)
+        진입 파라미터 계산 및 안전장치 가동
         """
         if entry_price <= 0 or stop_loss <= 0:
             return None
     
-        # 1. 리스크 금액 산정
+        # 1. 기초 리스크 금액 산정
         risk_amount = balance * self.risk_per_trade
         
-        # 2. 포지션 수량 계산
+        # 2. 포지션 수량 계산 (기존 손절가 기준)
         price_diff = abs(entry_price - stop_loss)
         if price_diff == 0: return None
     
         position_size = risk_amount / price_diff
         
-        # 3. 레버리지 한도 체크
+        # 3. 레버리지 한도 체크 (Notional Value Cap)
         notional_value = position_size * entry_price
         max_allowed_notional = balance * self.leverage
         
         if notional_value > max_allowed_notional:
-            # print(f"⚠️ [RiskManager] Capped by leverage. Req: {notional_value:.2f}, Max: {max_allowed_notional:.2f}")
+            # 레버리지 한도 초과 시 수량 삭감
             position_size = max_allowed_notional / entry_price
     
         quantity = round(position_size, 4)
+        if quantity <= 0: return None
         
         # ---------------------------------------------------------
-        # [NEW] 강제 청산가(Liquidation Price) 계산
-        # 유지증거금율(Maintenance Margin) 약 0.5% 가정
-        # Long Liq = Entry * (1 - 1/Lev + 0.005)
-        # Short Liq = Entry * (1 + 1/Lev - 0.005)
+        # [Safety Guard] 청산가 계산 및 손절가 보정
         # ---------------------------------------------------------
-        mm_rate = 0.005 # 0.5% 유지증거금
+        # 유지증거금율 (Maintenance Margin Rate) - 바이낸스 기준 약 0.5% 가정
+        mm_rate = 0.005 
         
+        # 청산가와의 안전거리 버퍼 (Slippage 고려 0.2%)
+        safety_buffer = 0.002 
+
         if action == "BUY":
+            # Long Liquidation Formula (Isolated)
+            # Liq = Entry * (1 - 1/Lev + mm_rate)
             liq_price = entry_price * (1 - (1/self.leverage) + mm_rate)
-            # 청산가가 0보다 작으면 0으로 보정
             liq_price = max(0, liq_price)
+            
+            # [핵심] Safety Guard
+            # 만약 전략이 정한 손절가(Wide SL)가 청산가보다 낮거나 너무 가깝다면?
+            safe_threshold = liq_price * (1 + safety_buffer)
+            
+            if stop_loss <= safe_threshold:
+                # print(f"⚠️ [RiskManager] SL too wide! Adjusting: {stop_loss} -> {safe_threshold:.2f} (Liq: {liq_price:.2f})")
+                stop_loss = safe_threshold
+
         else: # SELL
+            # Short Liquidation Formula
+            # Liq = Entry * (1 + 1/Lev - mm_rate)
             liq_price = entry_price * (1 + (1/self.leverage) - mm_rate)
+            
+            # Safety Guard for Short
+            safe_threshold = liq_price * (1 - safety_buffer)
+            
+            if stop_loss >= safe_threshold:
+                stop_loss = safe_threshold
+
+        # 최종 리스크 재계산 (보정된 SL 기준 실제 손실액)
+        # 수량을 줄이진 않고, 손절을 빨리 치는 방식으로 대응 (손실액 감소 효과)
+        final_price_diff = abs(entry_price - stop_loss)
+        actual_risk_amount = final_price_diff * quantity
 
         return {
             "action": action,
             "entry_price": entry_price,
             "quantity": quantity,
             "stop_loss": round(stop_loss, 2),
-            "risk_amount_usdt": round(risk_amount, 2),
-            "sl_distance": round(price_diff, 2),
-            "liq_price": round(liq_price, 2) # [NEW] 청산가 정보 추가
+            "risk_amount_usdt": round(actual_risk_amount, 2),
+            "liq_price": round(liq_price, 2)
         }
 
-# 테스트 코드
 if __name__ == "__main__":
-    print("--- Step 3: RiskManager Verification ---")
-    rm = RiskManager()
+    # 간단 테스트
+    rm = RiskManager(leverage=5.0) # 5배 레버리지
     
-    # 가상 상황 1: BUY 포지션
-    balance1 = 10000
-    entry_price1 = 50000
-    stop_loss1 = 49500 # 전략에서 결정된 손절가
-    action1 = "BUY"
+    print("--- Safety Guard Test (Long 5x) ---")
+    entry = 50000
+    # 의도적으로 아주 먼 손절가 설정 (청산가보다 아래)
+    # 5배 레버리지면 청산가가 약 40,000불 근처임. SL을 38,000으로 설정해봄.
+    dangerous_sl = 38000 
     
-    print("\n--- Test Case 1: BUY Position ---")
-    params1 = rm.calculate_entry_params(balance1, entry_price1, stop_loss1, action1)
+    params = rm.calculate_entry_params(10000, entry, dangerous_sl, "BUY")
     
-    if params1:
-        print("\n[>>] Calculated Trade Parameters:")
-        print(f"Action: {params1['action']}")
-        print(f"Entry: ${params1['entry_price']:.2f}")
-        print(f"Stop Loss: ${params1['stop_loss']:.2f} (Distance: {params1['sl_distance']:.2f})")
-        print(f"Quantity: {params1['quantity']} BTC")
-        print(f"Risk Amount: ${params1['risk_amount_usdt']:.2f} (Loss if SL hit)")
-        
-        # 검증: 실제 손실액 계산
-        real_loss1 = (entry_price1 - params1['stop_loss']) * params1['quantity']
-        print(f"Verifying Loss: {real_loss1:.2f} (Should be close to Risk Amount)")
+    if params:
+        print(f"Entry: ${params['entry_price']}")
+        print(f"Original SL: ${dangerous_sl}")
+        print(f"Liquidation Price: ${params['liq_price']}")
+        print(f"Adjusted Safe SL: ${params['stop_loss']} (Should be > Liq Price)")
     else:
-        print("Parameter calculation failed.")
-        
-    print("\n" + "="*40 + "\n")
-    
-    # 가상 상황 2: SELL 포지션
-    balance2 = 10000
-    entry_price2 = 50000
-    stop_loss2 = 50500 # 전략에서 결정된 손절가
-    action2 = "SELL"
-
-    print("--- Test Case 2: SELL Position ---")
-    params2 = rm.calculate_entry_params(balance2, entry_price2, stop_loss2, action2)
-    
-    if params2:
-        print("\n[>>] Calculated Trade Parameters:")
-        print(f"Action: {params2['action']}")
-        print(f"Entry: ${params2['entry_price']:.2f}")
-        print(f"Stop Loss: ${params2['stop_loss']:.2f} (Distance: {params2['sl_distance']:.2f})")
-        print(f"Quantity: {params2['quantity']} BTC")
-        print(f"Risk Amount: ${params2['risk_amount_usdt']:.2f} (Loss if SL hit)")
-        
-        # 검증: 실제 손실액 계산
-        real_loss2 = (params2['stop_loss'] - entry_price2) * params2['quantity'] # Short의 경우 반대
-        print(f"Verifying Loss: {real_loss2:.2f} (Should be close to Risk Amount)")
-    else:
-        print("Parameter calculation failed.")
-
-    print("\n--- Verification Complete ---")
+        print("Calculation Failed")
