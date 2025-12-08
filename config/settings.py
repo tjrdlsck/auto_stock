@@ -19,7 +19,7 @@ class Config:
     
     # 데이터 수집: 1시간봉이므로 넉넉하게 5년치
     TOTAL_DAYS_TO_FETCH = 365 * 5
-    TEST_DAYS = 700
+    TEST_DAYS = 1400
 
     # ---------------------------------------------------------
     # 2. Portfolio Settings (핵심 수정)
@@ -29,7 +29,7 @@ class Config:
         "BTC/USDT": {
             "SMA_PERIOD": 50,       # 일봉 기준 50일선
             "VBO_K_WINDOW": 20,
-            "ALLOCATION": 0.0,      # 비중 40%
+            "ALLOCATION": 0.3,      # 비중 40%
             "LEVERAGE": 3.0,        # 레버리지 3배 (안전하게 하향 조정 권장)
             "SL_MULT": 2.5,
             "TRAILING_MULT": 4.0,   # ATR 4배 (Wide SL)
@@ -38,7 +38,16 @@ class Config:
         "ETH/USDT": {
             "SMA_PERIOD": 30,       # 일봉 기준 30일선
             "VBO_K_WINDOW": 20,
-            "ALLOCATION": 1.0,      # 비중
+            "ALLOCATION": 0.4,      # 비중
+            "LEVERAGE": 3.0,      
+            "SL_MULT": 4.0,  
+            "TRAILING_MULT": 2.0,   # ATR 4배 (Wide SL)
+            "RISK_PER_TRADE": 0.30
+        },
+        "SOL/USDT": {
+            "SMA_PERIOD": 30,       # 일봉 기준 30일선
+            "VBO_K_WINDOW": 20,
+            "ALLOCATION": 0.3,      # 비중
             "LEVERAGE": 3.0,      
             "SL_MULT": 4.0,  
             "TRAILING_MULT": 2.0,   # ATR 4배 (Wide SL)

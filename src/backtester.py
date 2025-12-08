@@ -205,26 +205,42 @@ class Backtester:
 
 
     def _generate_report(self):
+        """최종 리포트 생성 (ROI 반환 누락 수정)"""
+        
+        # 거래가 아예 없었을 경우
         if not self.trade_log:
             return {
-                "roi_pct": 0.0, "mdd_pct": 0.0, "total_trades": 0, 
-                "win_rate_pct": 0.0, "liquidations": 0, "min_safety_margin": 100.0
+                "roi_pct": 0.0, 
+                "mdd_pct": 0.0, 
+                "total_trades": 0, 
+                "win_rate_pct": 0.0, 
+                "liquidations": 0,
+                "min_safety_margin": 100.0
             }
 
         df_trades = pd.DataFrame(self.trade_log)
         df_equity = pd.DataFrame(self.equity_curve).set_index('timestamp')
         
-        peak = df_equity['equity'].cummax()
-        drawdown = (df_equity['equity'] - peak) / peak
-        mdd = drawdown.min() * 100 if not df_equity.empty else 0.0
+        # 1. ROI 계산 (누락되었던 부분)
+        # 봇 내부 기준 ROI (record_test.py 용)
+        roi = ((self.balance - Config.INITIAL_BALANCE) / Config.INITIAL_BALANCE) * 100
         
+        # 2. MDD 계산
+        if not df_equity.empty:
+            peak = df_equity['equity'].cummax()
+            drawdown = (df_equity['equity'] - peak) / peak
+            mdd = drawdown.min() * 100
+        else:
+            mdd = 0.0
+        
+        # 3. 통계 지표
         total_trades = len(df_trades)
         wins = len(df_trades[df_trades['pnl'] > 0])
         win_rate = (wins / total_trades) * 100 if total_trades > 0 else 0
         liquidations = len(df_trades[df_trades['reason'].str.contains("LIQUIDATION")])
         min_safety_margin = df_trades['min_dist_pct'].min() if 'min_dist_pct' in df_trades.columns else 0.0
 
-        # 파일명 분리
+        # 파일 저장 (심볼명 포함)
         safe_symbol = self.symbol.replace("/", "_")
         trade_file = os.path.join(Config.SAVE_DIR, f"trade_log_{safe_symbol}.csv")
         equity_file = os.path.join(Config.SAVE_DIR, f"equity_curve_{safe_symbol}.csv")
@@ -232,9 +248,11 @@ class Backtester:
         df_trades.to_csv(trade_file, index=False)
         df_equity.to_csv(equity_file)
 
-        self.logger.info(f"\n📊 [{self.symbol} Result] WinRate: {win_rate:.1f}% | MDD: {mdd:.2f}% | Liq: {liquidations}")
+        self.logger.info(f"\n📊 [{self.symbol} Result] ROI: {roi:.2f}% | WinRate: {win_rate:.1f}% | MDD: {mdd:.2f}%")
         
+        # [수정 완료] roi_pct 키 추가
         return {
+            "roi_pct": roi,               # <--- 여기 추가되었습니다!
             "mdd_pct": mdd,
             "total_trades": total_trades,
             "win_rate_pct": win_rate,
