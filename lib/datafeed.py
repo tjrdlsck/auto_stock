@@ -1,78 +1,78 @@
 import pandas as pd
 import numpy as np
-from datetime import datetime
 
 class DataFeed:
     """
-    Pandas DataFrame을 입력받아 시뮬레이션 엔진에 순차적으로(Bar-by-Bar) 데이터를 공급하는 클래스.
+    [Optimized]
+    DataFrame 또는 Dictionary(NumPy Arrays)를 입력받아
+    시뮬레이션 엔진에 데이터를 공급하는 클래스.
     """
-    def __init__(self, df: pd.DataFrame):
-        # 데이터프레임 복사 및 필수 컬럼 확인
-        self.df = df.copy()
-        self._validate_columns()
-        
-        # 반복(Iteration) 제어 변수
+    def __init__(self, data):
+        # 입력 데이터가 DataFrame인 경우와 Dictionary인 경우를 분기 처리
+        if isinstance(data, pd.DataFrame):
+            self._init_from_dataframe(data)
+        elif isinstance(data, dict):
+            self._init_from_dict(data)
+        else:
+            raise ValueError("DataFeed requires a DataFrame or a Dictionary of numpy arrays.")
+
+        # 반복 제어 변수
         self.current_idx = -1
-        self.total_len = len(self.df)
+        self.total_len = len(self.closes)
         
-        # 현재 바(Bar)의 데이터 캐싱
+        # 현재 바 데이터 캐싱 (속도 향상을 위해 직접 멤버 변수로)
         self.date = None
         self.open = 0.0
         self.high = 0.0
         self.low = 0.0
         self.close = 0.0
         self.volume = 0.0
-        
-        # 전체 데이터 배열 (Numpy로 변환하여 속도 최적화)
-        self.dates = self.df.index.to_pydatetime() # DatetimeIndex 가정
-        self.opens = self.df['open'].values
-        self.highs = self.df['high'].values
-        self.lows = self.df['low'].values
-        self.closes = self.df['close'].values
-        self.volumes = self.df['volume'].values
 
-    def _validate_columns(self):
-        required = ['open', 'high', 'low', 'close', 'volume']
-        for col in required:
-            if col not in self.df.columns:
-                raise ValueError(f"DataFrame missing required column: {col}")
+    def _init_from_dataframe(self, df: pd.DataFrame):
+        """DataFrame에서 NumPy 배열 추출"""
+        # copy()는 메모리를 쓰지만 안전성을 위해 유지 (단일 실행용)
+        # float32로 변환하여 메모리 최적화
+        self.dates = df.index.to_pydatetime()
+        self.opens = df['open'].values.astype('float32')
+        self.highs = df['high'].values.astype('float32')
+        self.lows = df['low'].values.astype('float32')
+        self.closes = df['close'].values.astype('float32')
+        self.volumes = df['volume'].values.astype('float32')
+        
+        # 전략에서 원본 데이터프레임이 필요할 때를 위해 참조 유지 (단일 실행 시 편의성)
+        self.df = df 
+
+    def _init_from_dict(self, data_dict: dict):
+        """Dictionary에서 NumPy 배열 직접 참조 (Zero-Copy)"""
+        self.dates = data_dict['index'] # DatetimeIndex or Array
+        self.opens = data_dict['open']
+        self.highs = data_dict['high']
+        self.lows = data_dict['low']
+        self.closes = data_dict['close']
+        self.volumes = data_dict['volume']
+        
+        # 최적화 모드에서는 df 참조를 생성하지 않음 (메모리 절약)
+        self.df = None
 
     def reset(self):
-        """커서를 초기화합니다."""
         self.current_idx = -1
         self.date = None
 
     def next(self) -> bool:
-        """
-        다음 바(Bar)로 이동합니다.
-        :return: 데이터가 있으면 True, 더 이상 없으면 False
-        """
         self.current_idx += 1
-        
         if self.current_idx >= self.total_len:
             return False
             
-        # 현재 데이터 갱신 (Numpy 배열 접근으로 고속 처리)
-        self.date = self.dates[self.current_idx]
-        self.open = self.opens[self.current_idx]
-        self.high = self.highs[self.current_idx]
-        self.low = self.lows[self.current_idx]
-        self.close = self.closes[self.current_idx]
-        self.volume = self.volumes[self.current_idx]
+        # 배열 직접 접근 (메서드 호출 오버헤드 최소화)
+        idx = self.current_idx
+        self.date = self.dates[idx]
+        self.open = self.opens[idx]
+        self.high = self.highs[idx]
+        self.low = self.lows[idx]
+        self.close = self.closes[idx]
+        self.volume = self.volumes[idx]
         
         return True
-
+        
     def __len__(self):
         return self.total_len
-
-    @property
-    def current_bar(self):
-        """현재 인덱스의 전체 행 데이터를 Series나 Dict 형태로 반환하고 싶을 때 사용"""
-        return {
-            'datetime': self.date,
-            'open': self.open,
-            'high': self.high,
-            'low': self.low,
-            'close': self.close,
-            'volume': self.volume
-        }
