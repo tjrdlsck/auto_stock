@@ -23,10 +23,10 @@ class DataLoader:
         if not os.path.exists(self.data_dir):
             os.makedirs(self.data_dir)
             
-        # 파일명에 타임프레임이 포함되므로 1d와 1h 파일이 섞이지 않음
-        # 예: data/BTC_USDT_1h.csv
+        # 파일명 (기본은 Parquet)
         clean_symbol = self.symbol.replace("/", "_")
-        self.file_path = os.path.join(self.data_dir, f"{clean_symbol}_{self.timeframe}.csv")
+        self.parquet_path = os.path.join(self.data_dir, f"{clean_symbol}_{self.timeframe}.parquet")
+        self.csv_path = os.path.join(self.data_dir, f"{clean_symbol}_{self.timeframe}.csv")
 
         try:
             exchange_class = getattr(ccxt, self.exchange_id)
@@ -42,13 +42,28 @@ class DataLoader:
 
     def get_backtest_data(self, force_update=False):
         """
-        데이터 로드 또는 갱신
+        데이터 로드 또는 갱신 (Parquet 우선)
         """
-        if os.path.exists(self.file_path) and not force_update:
-            print(f"[DataLoader] Found local cache: {self.file_path}")
-            df = pd.read_csv(self.file_path, index_col='datetime', parse_dates=True)
-            print(f"[DataLoader] Loaded {len(df)} candles ({self.timeframe}).")
+        # 1. Parquet 확인
+        if os.path.exists(self.parquet_path) and not force_update:
+            print(f"[DataLoader] Found local Parquet cache: {self.parquet_path}")
+            return pd.read_parquet(self.parquet_path)
+            
+        # 2. CSV 확인 (Migration)
+        elif os.path.exists(self.csv_path) and not force_update:
+            print(f"[DataLoader] Found local CSV cache, migrating to Parquet...")
+            dtypes = {
+                'open': 'float32', 'high': 'float32', 'low': 'float32', 
+                'close': 'float32', 'volume': 'float32'
+            }
+            df = pd.read_csv(self.csv_path, index_col='datetime', parse_dates=True, dtype=dtypes)
+            
+            # Parquet으로 저장 후 리턴
+            df.to_parquet(self.parquet_path, engine='pyarrow', compression='snappy')
+            print(f"[DataLoader] Migrated to {self.parquet_path}")
             return df
+
+        # 3. 없으면 다운로드
         else:
             print(f"[DataLoader] Fetching new data ({self.timeframe})... This might take a while.")
             return self.fetch_history()
@@ -108,13 +123,16 @@ class DataLoader:
         
         cols = ['open', 'high', 'low', 'close', 'volume']
         df[cols] = df[cols].apply(pd.to_numeric, errors='coerce')
+        # [Memory Optimization] float32로 변환
+        df[cols] = df[cols].astype('float32')
         
         # 중복 및 결측 제거
         df = df[~df.index.duplicated(keep='first')]
         df.dropna(inplace=True)
         
-        df.to_csv(self.file_path)
-        print(f"[DataLoader] Successfully saved {len(df)} candles to {self.file_path}")
+        # Parquet으로 저장
+        df.to_parquet(self.parquet_path, engine='pyarrow', compression='snappy')
+        print(f"[DataLoader] Successfully saved {len(df)} candles to {self.parquet_path}")
         
         return df
 

@@ -19,7 +19,7 @@ class Config:
     
     # 데이터 수집: 1시간봉이므로 넉넉하게 5년치
     TOTAL_DAYS_TO_FETCH = 365 * 5
-    TEST_DAYS = 1400
+    TEST_DAYS = 360
 
     # ---------------------------------------------------------
     # 2. Portfolio Settings (핵심 수정)

@@ -21,33 +21,33 @@ from src.risk_manager import RiskManager
 # 🧪 실험 파라미터 정의 (Search Space)
 # Wide SL 전략에 맞춰 범위를 조정했습니다.
 # =========================================================
-# SEARCH_SPACE = {
-#     'test_days': (np.arange(180, 721, 180)).tolist(),
-#     # 2. 로직 (새로 추가됨!): 종목별 맞춤 옷을 찾기 위함
-#     'sma_period': [30, 50, 70],
-#     'k_window': [20], # K는 20으로 고정해도 무방 (너무 많으면 계산 오래 걸림)
-#     'risk_per_trade': (np.arange(10, 31, 5)/100).tolist(), # 10%~30%
-#     'leverage': (np.arange(1, 10, 2)).tolist(),            # 1, 3, 5, 7, 9배
-#     'sl_multiplier': (np.arange(30, 51, 5)/10).tolist(),
-#     'trailing_mult': [2.0]     # 2.0 ~ 8.0배
-# }
-
 SEARCH_SPACE = {
-    # 1. 기간 설정: 최근 1년 ~ 2년 (데이터가 충분해야 함)
-    'test_days': [365], 
-    
-    # 2. 전략 파라미터
-    'sma_period': [30, 50, 70],      # 추세 판단 기준
-    'k_window': [20],                # Noise Ratio 평균 기간
-    
-    # 3. 리스크 관리 (Wide SL 핵심)
-    'sl_multiplier': [3.0, 4.0, 5.0], # ATR의 3~5배 (널널하게)
-    'risk_per_trade': [0.1, 0.2],     # 자산의 10% ~ 20% 투입
-    'leverage': [2, 3, 4],            # 레버리지 (저배율 권장)
-    
-    # 4. 트레일링 스탑
-    'trailing_mult': [4.0, 5.0]       # 손절만큼 널널하게 따라감
+    'test_days': (np.arange(180, 721, 180)).tolist(),
+    # 2. 로직 (새로 추가됨!): 종목별 맞춤 옷을 찾기 위함
+    'sma_period': [30, 50, 70],
+    'k_window': [20], # K는 20으로 고정해도 무방 (너무 많으면 계산 오래 걸림)
+    'risk_per_trade': (np.arange(10, 31, 5)/100).tolist(), # 10%~30%
+    'leverage': (np.arange(1, 10, 2)).tolist(),            # 1, 3, 5, 7, 9배
+    'sl_multiplier': (np.arange(30, 51, 5)/10).tolist(),
+    'trailing_mult': [2.0]     # 2.0 ~ 8.0배
 }
+
+# SEARCH_SPACE = {
+#     # 1. 기간 설정: 최근 1년 ~ 2년 (데이터가 충분해야 함)
+#     'test_days': [365], 
+    
+#     # 2. 전략 파라미터
+#     'sma_period': [30, 50, 70],      # 추세 판단 기준
+#     'k_window': [20],                # Noise Ratio 평균 기간
+    
+#     # 3. 리스크 관리 (Wide SL 핵심)
+#     'sl_multiplier': [3.0, 4.0, 5.0], # ATR의 3~5배 (널널하게)
+#     'risk_per_trade': [0.1, 0.2],     # 자산의 10% ~ 20% 투입
+#     'leverage': [2, 3, 4],            # 레버리지 (저배율 권장)
+    
+#     # 4. 트레일링 스탑
+#     'trailing_mult': [4.0, 5.0]       # 손절만큼 널널하게 따라감
+# }
 
 def run_experiment(params: dict, description: str):
     """
@@ -92,7 +92,8 @@ def run_experiment(params: dict, description: str):
         
         # [수정된 부분] symbol 인자를 꼭 넘겨줘야 함!
         # Config.SYMBOL은 settings.py에서 설정한 값 (예: SOL/USDT)
-        tester = Backtester(df.copy(), strategy, risk_manager, symbol=Config.SYMBOL)
+        # [Memory Optimization] 불필요한 .copy() 제거
+        tester = Backtester(df, strategy, risk_manager, symbol=Config.SYMBOL)
         
         results = tester.run()
 

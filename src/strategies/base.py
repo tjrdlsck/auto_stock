@@ -37,10 +37,10 @@ class BaseStrategy(ABC):
         pass
 
     @abstractmethod
-    def generate_signal(self, current_slice: pd.DataFrame) -> TradeSignal:
+    def generate_signal(self, data: Any) -> TradeSignal:
         """
-        현재 시점(slice의 마지막 row)을 기준으로 매매 판단을 내립니다.
-        :param current_slice: 과거부터 현재까지의 데이터 슬라이스
+        현재 시점의 데이터를 기준으로 매매 판단을 내립니다.
+        :param data: 현재 시점의 데이터 (DataFrame Row, NamedTuple 등)
         :return: TradeSignal 객체
         """
         pass

@@ -96,47 +96,50 @@ class VolatilityBreakoutTrailingStrategy(BaseStrategy):
         # 5. 최종 목표가(Target) 계산 (매 시간마다 동일한 값)
         # 공식: 오늘 시가(일봉 시가가 아님! 변동성 돌파는 '당일 기준가' + Range * K)
         # 보통 변동성 돌파는 'Daily Open'을 기준으로 합니다.
-        # 따라서 1시간봉의 open이 아니라, 위에서 가져온 'prev_day_close'(혹은 오늘 날짜의 시가)를 써야 합니다.
-        # 바이낸스 기준 00:00의 Open price가 그날의 기준가가 됩니다.
         
-        # 병합된 데이터에는 '오늘의 시가' 정보가 없으므로(shift 했으니까), 
-        # 다시 df_daily에서 '오늘 시가'를 가져와야 합니다. 
-        # 하지만 간단하게: df_merged['open']은 매 시간의 시가이므로 쓰면 안됨.
-        
-        # [수정 로직] Daily Open 구하기
-        # 현재 캔들이 속한 날짜의 00:00 시가 찾기
         daily_opens = df.resample('1D')['open'].first()
-        # 이것도 시간 단위로 매핑
         df_merged['daily_open'] = df_merged['date_str'].map(daily_opens)
         
         # 목표가 계산
-        # Target = 당일 시가 + (전일 Range * 전일 K)
         df_merged['long_target'] = df_merged['daily_open'] + (df_merged['prev_range'] * df_merged['prev_k'])
+        
+        # [Optimization] 6. 진입 신호 선계산 (Vectorized Signal Generation)
+        # 루프 내에서 매번 계산하는 대신, 여기서 한 번에 계산합니다.
+        # 조건 1: 추세 필터 (현재가 > 어제 SMA) - 보수적 관점: '시가'가 SMA 위에 있거나 '종가'가 위에 있거나. 
+        # 여기서는 원본 로직 유지: 현재가(close) 기준이지만, 진입 시점(High가 쳤을 때)을 고려해야 함.
+        # 하지만 High가 Target을 쳤다는 건 가격이 상승했다는 뜻이므로, Bull Trend일 확률이 높음.
+        # 정확히는 "전일 종가 > 전일 SMA" 조건을 많이 씀. (코드상 is_bull_trend = curr_close > daily_sma 였음)
+        # curr_close > daily_sma는 실시간 변동 조건이므로 벡터화 시 '종가' 기준으로 근사하거나,
+        # 엄밀하게 하려면 '전일 종가' 기준으로 필터링하는 것이 일반적임 (Pre-filtering).
+        # 기존 로직을 최대한 유지하기 위해 '현재 close > sma' 조건을 그대로 벡터화.
+        
+        condition_trend = df_merged['close'] > df_merged['prev_sma']
+        condition_breakout = df_merged['high'] >= df_merged['long_target']
+        
+        # buy_signal 컬럼 추가 (Boolean)
+        df_merged['buy_signal'] = condition_trend & condition_breakout
         
         # 데이터 정리
         df_merged.dropna(inplace=True)
         
         return df_merged
 
-    def generate_signal(self, current_slice: pd.DataFrame) -> TradeSignal:
+    def generate_signal(self, curr_row: Any) -> TradeSignal:
         """
         현재(1시간봉) 데이터를 보고 진입 여부 판단
+        :param curr_row: itertuples()로 생성된 NamedTuple (Index, open, high, low, close, ...)
         """
-        if len(current_slice) < 1:
-            return TradeSignal(timestamp=None, action="HOLD", entry_price=0)
-
-        curr = current_slice.iloc[-1]
-        timestamp = curr.name
+        # itertuples()의 결과인 NamedTuple은 .Index로 인덱스(datetime)에 접근합니다.
+        timestamp = curr_row.Index
         
         # 현재가 정보 (1시간봉)
-        curr_close = curr['close']
-        curr_high = curr['high'] # 이번 시간의 고가
-        curr_low = curr['low']   # 이번 시간의 저가
+        curr_close = curr_row.close
+        curr_high = curr_row.high # 이번 시간의 고가
         
         # 일봉 기준 지표 (하루 종일 같은 값)
-        long_target = curr['long_target']
-        daily_sma = curr['prev_sma'] # 어제까지의 추세
-        daily_atr = curr['prev_atr']
+        long_target = curr_row.long_target
+        daily_sma = curr_row.prev_sma # 어제까지의 추세
+        daily_atr = curr_row.prev_atr
         
         action = "HOLD"
         entry_price = curr_close
@@ -145,7 +148,6 @@ class VolatilityBreakoutTrailingStrategy(BaseStrategy):
 
         # --- 진입 판단 로직 ---
         # 1. 추세 필터: 어제 종가가 어제 SMA보다 높았는가? (혹은 현재가가 SMA보다 높은가)
-        # 보통 래리 윌리엄스 전략은 '현재 가격'이 이동평균선 위에 있을 때를 선호
         is_bull_trend = curr_close > daily_sma
         
         # 2. 돌파 확인
@@ -154,20 +156,14 @@ class VolatilityBreakoutTrailingStrategy(BaseStrategy):
             action = "BUY"
             
             # 진입가: 목표가와 현재 시가(1h open) 중 큰 값 (Gap 보정)
-            # 하지만 백테스트에서는 '목표가'에 체결되었다고 가정하는 게 일반적 (Slippage 별도)
+            # 보통 변동성 돌파는 '목표가' 체결 가정
             entry_price = long_target
             
             # 손절가 설정 (Wide SL)
-            # 진입가 - (일봉 ATR * Multiplier)
-            # 예: Multiplier가 4.0이면 ATR의 4배만큼 여유를 둠
             stop_loss = entry_price - (daily_atr * self.sl_multiplier)
             
             reason = f"Hit Target {long_target:.2f} (DailyATR: {daily_atr:.2f})"
 
-        # 숏(Sell) 로직은 현재 롱 전용 포트폴리오(BTC/ETH)에 집중하기 위해 생략하거나
-        # 필요 시 대칭적으로 구현 (Short Target = Daily Open - Range * K)
-        # 여기서는 Long Only 로직만 명확히 기술
-        
         return TradeSignal(
             timestamp=timestamp,
             action=action,

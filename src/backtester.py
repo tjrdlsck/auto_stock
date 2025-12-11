@@ -55,47 +55,59 @@ class Backtester:
         
         show_progress = False if Config.LOG_LEVEL == "WARNING" else True
         
-        for i in tqdm(range(start_index, len(self.full_df)), disable=not show_progress, desc=f"{self.symbol}"):
-            current_slice = self.full_df.iloc[:i+1]
-            current_bar = current_slice.iloc[-1]
-            current_time = current_bar.name
+        for row in tqdm(self.full_df.iloc[start_index:].itertuples(), total=len(self.full_df)-start_index, disable=not show_progress, desc=f"{self.symbol}"):
+            # [Optimization] itertuples() 사용으로 객체 생성 오버헤드 제거
+            # row는 NamedTuple (Index, open, high, low, close, ...)
+            
+            current_time = row.Index # 인덱스는 Index 속성으로 접근
             
             if self.position:
                 self._apply_funding_fee(current_time)
-                self._check_exit(current_bar)
+                self._check_exit(row)
             
             if not self.position:
-                self._process_entry(current_slice)
+                # [Optimization] 선계산된 시그널 확인 (함수 호출 비용 제거)
+                # row.buy_signal이 True일 때만 진입 로직 수행
+                if row.buy_signal:
+                    self._process_entry(row)
             
-            self._record_equity(current_bar)
+            self._record_equity(row)
 
         return self._generate_report()
 
-    def _process_entry(self, df_slice):
-        current_bar = df_slice.iloc[-1]
-        timestamp = current_bar.name
-        signal = self.strategy.generate_signal(df_slice)
+    def _process_entry(self, row):
+        # [Optimization] generate_signal 호출 제거하고 row 데이터 직접 사용
+        # 이미 buy_signal이 True인 상태에서 들어옴
         
-        if signal.action == "BUY":
-            params = self.risk_manager.calculate_entry_params(
-                balance=self.balance,
-                entry_price=signal.entry_price,
-                stop_loss=signal.stop_loss,
-                action=signal.action
-            )
+        action = "BUY"
+        # long_target 등은 이미 row에 있음
+        entry_price = row.long_target
+        
+        # 손절가 계산 (전략 로직 인라인 or row에서 가져오기)
+        # 전략 객체의 파라미터 필요 (sl_multiplier)
+        daily_atr = row.prev_atr
+        stop_loss = entry_price - (daily_atr * self.strategy.sl_multiplier)
+        
+        params = self.risk_manager.calculate_entry_params(
+            balance=self.balance,
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            action=action
+        )
+        
+        if params:
+            # Trailing Stop Multiplier도 전략에서 가져옴
+            params['trailing_stop_multiplier'] = self.strategy.trailing_mult
+            self._execute_entry(params, row.Index)
             
-            if params:
-                params['trailing_stop_multiplier'] = signal.trailing_stop_multiplier
-                self._execute_entry(params, timestamp)
-                
-                # Intra-bar Loss Check
-                if current_bar['low'] <= params['stop_loss']:
-                    self.logger.warning(f"⚠️ [{self.symbol}] Intra-bar Loss immediately!")
-                    self._execute_exit(
-                        price=params['stop_loss'],
-                        reason="STOP_LOSS (Intra-bar)",
-                        timestamp=timestamp
-                    )
+            # Intra-bar Loss Check (속성 접근)
+            if row.low <= params['stop_loss']:
+                self.logger.warning(f"⚠️ [{self.symbol}] Intra-bar Loss immediately!")
+                self._execute_exit(
+                    price=params['stop_loss'],
+                    reason="STOP_LOSS (Intra-bar)",
+                    timestamp=row.Index
+                )
 
     def _execute_entry(self, params, timestamp):
         """진입 주문 및 증거금 기록"""
@@ -122,12 +134,12 @@ class Backtester:
         
         self.logger.info(f"\n🟢 [{self.symbol}] ENTRY {timestamp} | BUY @ ${params['entry_price']:.2f} | Margin: ${isolated_margin:.2f}")
 
-    def _check_exit(self, current_bar):
+    def _check_exit(self, row):
         pos = self.position
-        current_time = current_bar.name
+        current_time = row.Index
         
-        curr_low = current_bar['low']
-        curr_open = current_bar['open']
+        curr_low = row.low
+        curr_open = row.open
 
         dist_percent = ((curr_low - pos['liq_price']) / pos['entry_price']) * 100
         if dist_percent < pos['min_liq_dist_pct']:
@@ -195,13 +207,13 @@ class Backtester:
         self.position = None
 
 
-    def _record_equity(self, current_bar):
+    def _record_equity(self, row):
         equity = self.balance
         if self.position:
-            current_price = current_bar['close']
+            current_price = row.close
             unrealized = (current_price - self.position['entry_price']) * self.position['quantity']
             equity += unrealized
-        self.equity_curve.append({"timestamp": current_bar.name, "equity": equity})
+        self.equity_curve.append({"timestamp": row.Index, "equity": equity})
 
 
     def _generate_report(self):
