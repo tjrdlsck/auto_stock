@@ -10,7 +10,10 @@ class VolatilityBreakoutStrategy(BaseStrategy):
     - iloc 제거 및 NumPy Array 직접 접근 방식을 통한 고속화
     """
     def initialize(self):
-        # 1. 파라미터 로드
+        # 1. 파라미터 설정
+        # [Fix] self.symbol 초기화가 누락되어 추가했습니다.
+        self.symbol = self.params.get('symbol', 'BTC/USDT')
+        
         self.k_window = self.params.get('k_window', 20)
         self.sma_period = self.params.get('sma_period', 50)
         self.sl_mult = self.params.get('sl_mult', 3.0)
@@ -22,8 +25,6 @@ class VolatilityBreakoutStrategy(BaseStrategy):
         # 2. 데이터 준비 (DataFrame이 없으면 Feed에서 재구성해야 함)
         # Optimize 모드에서는 self.feed.df가 None일 수 있음 -> NumPy로 구성
         if self.feed.df is None:
-            # 시간 관계상 Optimize 모드에서도 로직 계산을 위해 임시 DataFrame 생성은 불가피
-            # 단, 한 번 만들고 배열로 변환 후엔 폐기함
             df = pd.DataFrame({
                 'open': self.feed.opens,
                 'high': self.feed.highs,
@@ -35,7 +36,7 @@ class VolatilityBreakoutStrategy(BaseStrategy):
             df = self.feed.df.copy()
 
         # ----------------------------------------------------
-        # 지표 계산 로직 (기존과 동일하되 결과만 배열로 추출)
+        # 지표 계산 로직
         # ----------------------------------------------------
         df['date_str'] = df.index.normalize()
         
@@ -53,7 +54,7 @@ class VolatilityBreakoutStrategy(BaseStrategy):
             df_daily['high'], df_daily['low'], df_daily['close'], window=self.atr_period
         )
 
-        # Shift & Rename
+        # Shift & Rename (전일 지표 사용)
         df_daily_shifted = df_daily.shift(1)
         rename_map = {
             'range': 'prev_range', 'k': 'prev_k', 'sma': 'prev_sma', 'atr': 'prev_atr'
@@ -69,6 +70,7 @@ class VolatilityBreakoutStrategy(BaseStrategy):
         current_daily_opens['date_str'] = current_daily_opens.index.normalize()
 
         # 1시간봉에 병합 (Merge)
+        # reset_index()로 인덱스를 컬럼으로 내림
         df_merged = pd.merge(df.reset_index(), df_daily_final, on='date_str', how='left')
         df_merged = pd.merge(df_merged, current_daily_opens, on='date_str', how='left')
         
@@ -79,14 +81,18 @@ class VolatilityBreakoutStrategy(BaseStrategy):
         # [핵심 최적화] 계산된 지표를 NumPy Array로 변환하여 멤버 변수에 저장
         # DataFrame 접근(iloc)을 피하기 위함
         # ----------------------------------------------------
-        # 필요한 컬럼만 추출하여 float32 배열로 저장
         self.arr_long_target = df_merged['long_target'].values.astype('float32')
         self.arr_prev_sma = df_merged['prev_sma'].values.astype('float32')
         self.arr_prev_atr = df_merged['prev_atr'].values.astype('float32')
         
-        # 단일 실행 시 시각화를 위해 df 저장, 최적화 시엔 메모리 해제
+        # [Visualizer 지원] 단일 실행(main.py) 시에는 분석용 DataFrame을 저장해야 함
         if self.feed.df is not None:
-            self.df = df_merged.set_index('index' if 'index' in df_merged.columns else 'datetime')
+            # merge로 인해 인덱스가 사라졌으므로 다시 복구
+            if 'datetime' in df_merged.columns:
+                df_merged.set_index('datetime', inplace=True)
+            elif 'index' in df_merged.columns:
+                df_merged.set_index('index', inplace=True)
+            self.df = df_merged
         else:
             self.df = None # Optimize 모드에선 메모리 절약
 
