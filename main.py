@@ -65,6 +65,15 @@ def main():
         # 4. 시뮬레이션 실행
         result = engine.run()
 
+        # [추가] 지표가 포함된 데이터 저장 (Visualizer용)
+        # 전략 내부의 df는 이미 indicator가 계산되어 있음
+        if hasattr(engine, 'strategy') and hasattr(engine.strategy, 'df'):
+            analyzed_df = engine.strategy.df.copy()
+            # 파일명: analyzed_BTC_USDT.parquet
+            analyzed_path = os.path.join(Config.SAVE_DIR, f"analyzed_{clean_symbol}.parquet")
+            analyzed_df.to_parquet(analyzed_path)
+            print(f"📊 Analyzed data saved: {analyzed_path}")
+
         # 5. 결과 파일 저장 (Visualizer 호환용)
         clean_symbol = symbol.replace("/", "_")
         
