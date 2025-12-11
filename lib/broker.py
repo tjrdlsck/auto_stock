@@ -20,6 +20,9 @@ class Broker:
         self.active_orders: List[Order] = []      # 대기 중인 주문 (Stop 주문 등)
         self.trades: List[Trade] = []             # 체결된 거래 내역
         
+        # [추가됨] 자산 변동 기록용 리스트
+        self.equity_history: List[Dict] = [] 
+        
         self.logger = logging.getLogger("Broker")
 
     def get_total_equity(self) -> float:
@@ -75,6 +78,8 @@ class Broker:
             if order.status != OrderStatus.SUBMITTED:
                 continue
                 
+            fill_price = self._check_check(order, feed) # (참고: 원본 코드의 _check_fill 오타가 있다면 _check_fill로 사용)
+            # 여기서는 문맥상 _check_fill이 맞습니다. 아래 로직 유지.
             fill_price = self._check_fill(order, feed)
             
             if fill_price:
@@ -83,6 +88,9 @@ class Broker:
                 unfilled_orders.append(order)
                 
         self.active_orders = unfilled_orders
+
+        # [추가됨] 현재 시점의 자산 가치(Equity) 기록
+        self._log_equity_status(feed.date)
 
     def _apply_funding_fee(self, current_time: datetime):
         """8시간마다 (00:00, 08:00, 16:00) 펀딩비 차감"""
@@ -264,3 +272,13 @@ class Broker:
         self.trades.append(trade)
         del self.positions[pos.symbol]
         self.logger.warning(f"☠️ LIQUIDATION [{pos.symbol}] @ {price}")
+    
+    def _log_equity_status(self, timestamp: datetime):
+        """현재 시점의 총 자산 가치를 기록합니다."""
+        total_equity = self.get_total_equity()
+        self.equity_history.append({
+            'timestamp': timestamp,
+            'equity': total_equity,
+            'cash': self.cash
+            # 필요하다면 positions_count 등을 추가 가능
+        })

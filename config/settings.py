@@ -91,6 +91,33 @@ class Config:
     SAVE_DIR = "data"
 
     @classmethod
+    def get_strategy_config(cls, symbol: str) -> dict:
+        """
+        입력된 심볼에 해당하는 전략 파라미터를 생성하여 반환합니다.
+        PORTFOLIO에 정의된 값이 있으면 우선 사용하고, 없으면 기본값(Default)을 사용합니다.
+        """
+        # 1. 포트폴리오 설정 가져오기 (없으면 빈 딕셔너리)
+        portfolio_params = cls.PORTFOLIO.get(symbol, {})
+
+        # 2. 파라미터 병합 (Portfolio 설정이 우선순위 높음)
+        # 전략 클래스(__init__)에 전달될 최종 kwargs 딕셔너리 구성
+        config = {
+            'symbol': symbol,
+            # 전략 로직 파라미터
+            'k_window': portfolio_params.get('VBO_K_WINDOW', cls.VBO_K_WINDOW),
+            'sma_period': portfolio_params.get('SMA_PERIOD', cls.SMA_PERIOD),
+            'atr_period': portfolio_params.get('ATR_PERIOD', cls.ATR_PERIOD),
+            
+            # 자금 관리 파라미터
+            'risk_per_trade': portfolio_params.get('RISK_PER_TRADE', cls.RISK_PER_TRADE),
+            'leverage': portfolio_params.get('LEVERAGE', cls.LEVERAGE),
+            'sl_mult': portfolio_params.get('SL_MULT', cls.STOP_LOSS_MULTIPLIER),
+            'trailing_mult': portfolio_params.get('TRAILING_MULT', cls.TRAILING_STOP_MULTIPLIER),
+        }
+        
+        return config
+
+    @classmethod
     def validate(cls):
         print(f"[Config] Loaded. Portfolio: {list(cls.PORTFOLIO.keys())}")
         print(f"[Config] Timeframe: {cls.TIMEFRAME} (Intra-day Logic Ready)")

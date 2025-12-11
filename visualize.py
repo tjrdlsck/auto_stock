@@ -11,18 +11,21 @@ from config.settings import Config
 
 def get_available_symbols():
     """
-    data 폴더를 스캔하여 백테스트 결과가 존재하는 심볼 목록을 반환합니다.
+    data 폴더를 스캔하여 백테스트 결과(trade_log)가 존재하는 심볼 목록을 반환합니다.
     파일명 패턴: trade_log_{SYMBOL}.csv
     """
+    # trade_log_로 시작하는 CSV 파일 검색
     pattern = os.path.join(Config.SAVE_DIR, "trade_log_*.csv")
     files = glob.glob(pattern)
     
     symbols = []
     for f in files:
-        # 파일명에서 심볼 추출 (예: trade_log_BTC_USDT.csv -> BTC_USDT)
+        # 파일명에서 심볼 추출 
+        # 예: .../trade_log_BTC_USDT.csv -> BTC_USDT
         filename = os.path.basename(f)
-        symbol = filename.replace("trade_log_", "").replace(".csv", "")
-        symbols.append(symbol)
+        if filename.startswith("trade_log_") and filename.endswith(".csv"):
+            symbol = filename[10:-4] # "trade_log_"(10글자) 제거, ".csv"(4글자) 제거
+            symbols.append(symbol)
     
     return sorted(symbols)
 
@@ -62,38 +65,58 @@ def plot_results():
 
     # 3. 데이터 로드
     try:
-        # 파일명 규칙 재구성
-        # Price Data: {SYMBOL}_{TIMEFRAME}.csv (예: BTC_USDT_1h.csv)
-        price_file = os.path.join(Config.SAVE_DIR, f"{target_symbol}_{Config.TIMEFRAME}.csv")
+        # (A) Price Data 로드 (Parquet 우선 지원)
+        price_parquet = os.path.join(Config.SAVE_DIR, f"{target_symbol}_{Config.TIMEFRAME}.parquet")
+        price_csv = os.path.join(Config.SAVE_DIR, f"{target_symbol}_{Config.TIMEFRAME}.csv")
         
-        # Result Data: trade_log_{SYMBOL}.csv
-        trade_file = os.path.join(Config.SAVE_DIR, f"trade_log_{target_symbol}.csv")
-        equity_file = os.path.join(Config.SAVE_DIR, f"equity_curve_{target_symbol}.csv")
-
-        # 로드
-        if not os.path.exists(price_file):
-            print(f"⚠️ Warning: Price file not found ({price_file}). Chart might be incomplete.")
-            df_price = pd.DataFrame()
+        df_price = pd.DataFrame()
+        
+        # Parquet이 있으면 로드, 없으면 CSV 확인
+        if os.path.exists(price_parquet):
+            df_price = pd.read_parquet(price_parquet)
+            print(f"✅ Loaded Price Data (Parquet): {len(df_price)} bars")
+        elif os.path.exists(price_csv):
+            df_price = pd.read_csv(price_csv, index_col='datetime', parse_dates=True)
+            print(f"✅ Loaded Price Data (CSV): {len(df_price)} bars")
         else:
-            df_price = pd.read_csv(price_file, index_col='datetime', parse_dates=True)
+            print(f"⚠️ Warning: Price file not found. Chart might be incomplete.")
 
+        # (B) Trade Log 로드
+        trade_file = os.path.join(Config.SAVE_DIR, f"trade_log_{target_symbol}.csv")
         df_trades = pd.read_csv(trade_file, parse_dates=['entry_time', 'exit_time'])
         
-        df_equity = pd.read_csv(equity_file, parse_dates=['timestamp'])
-        df_equity.set_index('timestamp', inplace=True)
+        # [수정] 컬럼 호환성 처리 ('type' -> 'side')
+        if 'side' not in df_trades.columns and 'type' in df_trades.columns:
+            df_trades.rename(columns={'type': 'side'}, inplace=True)
+            
+        print(f"✅ Loaded Trade Log: {len(df_trades)} trades")
+
+        # (C) Equity Curve 로드
+        equity_file = os.path.join(Config.SAVE_DIR, f"equity_curve_{target_symbol}.csv")
+        if os.path.exists(equity_file):
+            df_equity = pd.read_csv(equity_file, parse_dates=['timestamp'])
+            df_equity.set_index('timestamp', inplace=True)
+            print(f"✅ Loaded Equity Curve: {len(df_equity)} records")
+        else:
+            df_equity = pd.DataFrame()
+            print("ℹ️ Equity curve file not found. Skipping balance chart.")
 
     except Exception as e:
         print(f"❌ Error loading data: {e}")
+        # 디버깅을 위해 상세 에러 출력
+        import traceback
+        traceback.print_exc()
         return
 
     # 4. 차트 범위 최적화 (거래 기간만 확대)
     if not df_trades.empty and not df_price.empty:
-        start_date = df_trades['entry_time'].min() - pd.Timedelta(hours=12) # 1시간봉이므로 여유 12시간
-        end_date = df_trades['exit_time'].max() + pd.Timedelta(hours=12)
+        # 첫 거래 2일 전 ~ 마지막 거래 2일 후로 범위 설정
+        start_date = df_trades['entry_time'].min() - pd.Timedelta(hours=48)
+        end_date = df_trades['exit_time'].max() + pd.Timedelta(hours=48)
         
-        # 데이터가 너무 크면 Plotly가 느려지므로 범위 자르기
         df_price = df_price.loc[start_date:end_date]
-        df_equity = df_equity.loc[start_date:end_date]
+        if not df_equity.empty:
+            df_equity = df_equity.loc[start_date:end_date]
 
     # 5. 서브플롯 생성
     fig = make_subplots(
@@ -101,7 +124,7 @@ def plot_results():
         shared_xaxes=True, 
         vertical_spacing=0.05, 
         row_heights=[0.7, 0.3],
-        subplot_titles=(f"{target_symbol} Price & Trades ({Config.TIMEFRAME})", "Account Balance (Isolated)")
+        subplot_titles=(f"{target_symbol} Price & Trades ({Config.TIMEFRAME})", "Account Balance")
     )
 
     # --- [상단] 캔들 차트 ---
@@ -113,56 +136,56 @@ def plot_results():
             name='Price'
         ), row=1, col=1)
 
-    # --- [상단] 매매 타점 ---
+    # --- [상단] 매매 타점 (FIX: 'type' -> 'side') ---
     # Buy Entry
-    buys = df_trades[df_trades['type'] == 'BUY']
-    if not buys.empty:
-        fig.add_trace(go.Scatter(
-            x=buys['entry_time'], y=buys['entry_price'],
-            mode='markers', marker=dict(symbol='triangle-up', color='lime', size=12),
-            name='Buy Entry', hovertext=buys['type']
-        ), row=1, col=1)
+    if not df_trades.empty:
+        # 'side' 컬럼 사용
+        buys = df_trades[df_trades['side'] == 'BUY']
+        if not buys.empty:
+            fig.add_trace(go.Scatter(
+                x=buys['entry_time'], y=buys['entry_price'],
+                mode='markers', marker=dict(symbol='triangle-up', color='lime', size=12),
+                name='Buy Entry'
+            ), row=1, col=1)
 
-    # Sell Entry
-    sells = df_trades[df_trades['type'] == 'SELL']
-    if not sells.empty:
-        fig.add_trace(go.Scatter(
-            x=sells['entry_time'], y=sells['entry_price'],
-            mode='markers', marker=dict(symbol='triangle-down', color='red', size=12),
-            name='Sell Entry', hovertext=sells['type']
-        ), row=1, col=1)
+        # Sell Entry
+        sells = df_trades[df_trades['side'] == 'SELL']
+        if not sells.empty:
+            fig.add_trace(go.Scatter(
+                x=sells['entry_time'], y=sells['entry_price'],
+                mode='markers', marker=dict(symbol='triangle-down', color='red', size=12),
+                name='Sell Entry'
+            ), row=1, col=1)
 
-    # Exits (Win/Loss/Liq)
-    wins = df_trades[df_trades['pnl'] > 0]
-    losses = df_trades[(df_trades['pnl'] <= 0) & (~df_trades['reason'].str.contains("LIQUIDATION"))]
-    liquidations = df_trades[df_trades['reason'].str.contains("LIQUIDATION")]
+        # Win Exits
+        wins = df_trades[df_trades['net_pnl'] > 0]
+        if not wins.empty:
+            fig.add_trace(go.Scatter(
+                x=wins['exit_time'], y=wins['exit_price'], 
+                mode='markers', marker=dict(symbol='circle', color='cyan', size=8),
+                name='Win Exit',
+                hovertext=wins.apply(lambda x: f"PnL: ${x['net_pnl']:.2f}<br>{x['exit_reason']}", axis=1)
+            ), row=1, col=1)
 
-    # Win
-    if not wins.empty:
-        fig.add_trace(go.Scatter(
-            x=wins['exit_time'], y=wins['exit_price'], 
-            mode='markers', marker=dict(symbol='circle', color='cyan', size=8),
-            name='Win Exit', 
-            hovertext=wins.apply(lambda x: f"PnL: ${x['pnl']:.2f}<br>{x['reason']}", axis=1)
-        ), row=1, col=1)
-
-    # Loss
-    if not losses.empty:
-        fig.add_trace(go.Scatter(
-            x=losses['exit_time'], y=losses['exit_price'],
-            mode='markers', marker=dict(symbol='circle', color='orange', size=8),
-            name='Loss Exit',
-            hovertext=losses.apply(lambda x: f"PnL: ${x['pnl']:.2f}<br>{x['reason']}", axis=1)
-        ), row=1, col=1)
-    
-    # Liquidation (해골)
-    if not liquidations.empty:
-        fig.add_trace(go.Scatter(
-            x=liquidations['exit_time'], y=liquidations['liq_price'], # 청산은 exit_price 대신 liq_price 표시가 더 정확할 수 있음
-            mode='markers', marker=dict(symbol='x', color='white', size=12, line=dict(width=2, color='red')),
-            name='LIQUIDATED',
-            hovertext="☠️ LIQUIDATION"
-        ), row=1, col=1)
+        # Loss Exits (LIQUIDATION 제외)
+        losses = df_trades[(df_trades['net_pnl'] <= 0) & (df_trades['exit_reason'] != "LIQUIDATION")]
+        if not losses.empty:
+            fig.add_trace(go.Scatter(
+                x=losses['exit_time'], y=losses['exit_price'],
+                mode='markers', marker=dict(symbol='circle', color='orange', size=8),
+                name='Loss Exit',
+                hovertext=losses.apply(lambda x: f"PnL: ${x['net_pnl']:.2f}<br>{x['exit_reason']}", axis=1)
+            ), row=1, col=1)
+            
+        # Liquidations
+        liqs = df_trades[df_trades['exit_reason'] == "LIQUIDATION"]
+        if not liqs.empty:
+            fig.add_trace(go.Scatter(
+                x=liqs['exit_time'], y=liqs['exit_price'],
+                mode='markers', marker=dict(symbol='x', color='white', size=15, line=dict(width=2, color='red')),
+                name='LIQUIDATION',
+                hovertext="☠️ LIQUIDATION"
+            ), row=1, col=1)
 
     # --- [하단] 자산 곡선 ---
     if not df_equity.empty:
@@ -172,7 +195,7 @@ def plot_results():
             name='Balance', fill='tozeroy'
         ), row=2, col=1)
 
-    # 레이아웃
+    # 레이아웃 설정
     fig.update_layout(
         template='plotly_dark',
         title=f"Backtest Result: {target_symbol}",
@@ -183,8 +206,8 @@ def plot_results():
     # 저장
     output_file = f"backtest_result_{target_symbol}.html"
     fig.write_html(output_file)
-    print(f"✨ Chart saved to {output_file}")
-    print(f"👉 Please open '{output_file}' in your web browser.")
+    print(f"\n✨ Chart saved to {output_file}")
+    print(f"👉 Open this file in your browser to view the interactive chart.")
 
 if __name__ == "__main__":
     plot_results()
